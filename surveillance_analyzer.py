@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -82,20 +83,82 @@ class SurveillanceAnalyzer:
                 kismet_db_path = max(all_db_files, key=os.path.getmtime)
             else:
                 print(f"📊 Found {len(recent_db_files)} databases from past {self.analysis_window_hours} hours:")
-                total_gps_coords = 0
+                total_gps_fixes = 0
+
                 for db_file in recent_db_files:
                     try:
-                        conn = sqlite3.connect(db_file)
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT COUNT(*) FROM devices WHERE avg_lat != 0 AND avg_lon != 0")
-                        gps_count = cursor.fetchone()[0]
-                        conn.close()
-                        print(f"   📁 {os.path.basename(db_file)}: {gps_count} GPS locations")
-                        total_gps_coords += gps_count
-                    except:
-                        print(f"   ❌ {os.path.basename(db_file)}: Error reading")
-                
-                print(f"🛰️ Total GPS coordinates across all databases: {total_gps_coords}")
+                        database_uri = (
+                            Path(db_file).resolve().as_uri()
+                            + "?mode=ro"
+                        )
+
+                        with closing(
+                            sqlite3.connect(
+                                database_uri,
+                                uri=True,
+                            )
+                        ) as connection:
+                            packet_table = connection.execute(
+                                """
+                                SELECT 1
+                                FROM sqlite_master
+                                WHERE type = 'table'
+                                  AND name = 'packets'
+                                """
+                            ).fetchone()
+
+                            if packet_table is None:
+                                gps_count = 0
+                            else:
+                                packet_columns = {
+                                    row[1]
+                                    for row in connection.execute(
+                                        "PRAGMA table_info(packets)"
+                                    )
+                                }
+                                required_columns = {
+                                    "ts_sec",
+                                    "ts_usec",
+                                    "lat",
+                                    "lon",
+                                }
+
+                                if not (
+                                    required_columns
+                                    <= packet_columns
+                                ):
+                                    gps_count = 0
+                                else:
+                                    gps_count = (
+                                        connection.execute(
+                                            """
+                                            SELECT COUNT(*)
+                                            FROM packets
+                                            WHERE lat IS NOT NULL
+                                              AND lon IS NOT NULL
+                                              AND lat != 0
+                                              AND lon != 0
+                                            """
+                                        ).fetchone()[0]
+                                    )
+
+                        print(
+                            f"   📁 {os.path.basename(db_file)}: "
+                            f"{gps_count} source-timed GPS fixes"
+                        )
+                        total_gps_fixes += gps_count
+
+                    except sqlite3.Error as exc:
+                        print(
+                            f"   ❌ {os.path.basename(db_file)}: "
+                            f"Error reading GPS fixes: {exc}"
+                        )
+
+                print(
+                    "🛰️ Total source-timed GPS fixes "
+                    "across all databases: "
+                    f"{total_gps_fixes}"
+                )
                 # We'll process all recent databases, not just one
                 kismet_db_path = recent_db_files  # Pass list instead of single file
         
@@ -103,95 +166,140 @@ class SurveillanceAnalyzer:
         db_files_to_process = kismet_db_path if isinstance(kismet_db_path, list) else [kismet_db_path]
         print(f"📊 Processing {len(db_files_to_process)} Kismet database(s)")
         
-        # Load GPS data (real, simulated, or extract from Kismet)
-        if gps_data:
-            print(f"🛰️ Loading {len(gps_data)} GPS coordinates...")
-            for lat, lon, name in gps_data:
-                location_id = self.gps_tracker.add_gps_reading(lat, lon, location_name=name)
-                print(f"   📍 {name}: {lat:.4f}, {lon:.4f} -> {location_id}")
-        else:
-            # Extract GPS coordinates from all Kismet databases
-            print("🛰️ Extracting GPS coordinates from Kismet databases...")
-            try:
-                import sqlite3
-                all_gps_coords = []
-                
-                for db_file in db_files_to_process:
-                    try:
-                        conn = sqlite3.connect(db_file)
-                        cursor = conn.cursor()
-                        
-                        # Get GPS locations with timestamps from this database
-                        cursor.execute("""
-                            SELECT DISTINCT avg_lat, avg_lon, first_time
-                            FROM devices 
-                            WHERE avg_lat != 0 AND avg_lon != 0 
-                            ORDER BY first_time
-                        """)
-                        
-                        db_coords = cursor.fetchall()
-                        conn.close()
-                        
-                        if db_coords:
-                            print(f"   📁 {os.path.basename(db_file)}: {len(db_coords)} GPS locations")
-                            all_gps_coords.extend(db_coords)
-                        
-                    except Exception as e:
-                        print(f"   ❌ Error reading {os.path.basename(db_file)}: {e}")
-                        continue
-                
-                if all_gps_coords:
-                    # Sort all coordinates by timestamp and deduplicate nearby points
-                    all_gps_coords.sort(key=lambda x: x[2])  # Sort by timestamp
-                    
-                    gps_data = []
-                    prev_lat, prev_lon = None, None
-                    location_counter = 1
-                    
-                    for lat, lon, timestamp in all_gps_coords:
-                        # Skip if too close to previous point (within ~50m)
-                        if prev_lat and prev_lon:
-                            import math
-                            distance = math.sqrt((lat - prev_lat)**2 + (lon - prev_lon)**2) * 111000  # rough meters
-                            if distance < 50:
-                                continue
-                        
-                        location_name = f"Location_{location_counter}"
-                        location_id = self.gps_tracker.add_gps_reading(lat, lon, location_name=location_name)
-                        print(f"   📍 {location_name}: {lat:.6f}, {lon:.6f}")
-                        gps_data.append((lat, lon, location_name))
-                        
-                        prev_lat, prev_lon = lat, lon
-                        location_counter += 1
-                    
-                    print(f"🛰️ Total unique GPS locations: {len(gps_data)}")
+        # Load explicitly source-timed GPS fixes.
+        gps_available = False
+
+        if gps_data is not None:
+            print(
+                f"🛰️ Loading {len(gps_data)} source-timed "
+                "GPS coordinates..."
+            )
+
+            for index, entry in enumerate(gps_data, 1):
+                if isinstance(entry, dict):
+                    required_keys = {
+                        "latitude",
+                        "longitude",
+                        "timestamp",
+                    }
+                    missing_keys = required_keys - set(entry)
+
+                    if missing_keys:
+                        missing_text = ", ".join(
+                            sorted(missing_keys)
+                        )
+                        raise ValueError(
+                            "External GPS entry "
+                            f"{index} is missing: {missing_text}"
+                        )
+
+                    latitude = entry["latitude"]
+                    longitude = entry["longitude"]
+                    source_timestamp = entry["timestamp"]
+                    altitude = entry.get("altitude")
+                    accuracy = entry.get("accuracy")
+                    name = entry.get(
+                        "location_name",
+                        f"External_{index}",
+                    )
+                elif (
+                    isinstance(entry, (list, tuple))
+                    and len(entry) == 5
+                ):
+                    (
+                        latitude,
+                        longitude,
+                        source_timestamp,
+                        accuracy,
+                        name,
+                    ) = entry
+                    altitude = None
                 else:
-                    print("⚠️ No GPS coordinates found in any Kismet database - using single location mode")
-                    location_id = "unknown_location"
-                    
-            except Exception as e:
-                print(f"❌ Error extracting GPS from Kismet: {e}")
-                print("⚠️ Using single location mode")
-                location_id = "unknown_location"
-        
-        # Load device appearances from Kismet databases
-        print("📡 Loading device appearances from Kismet databases...")
-        total_count = 0
-        
-        if gps_data:
-            # Load devices from all databases, associating them with GPS locations
-            primary_location = "Location_1"  # Use the first/primary location
+                    raise ValueError(
+                        "External GPS entries must be dictionaries "
+                        "with latitude, longitude, and timestamp, "
+                        "or five-item sequences: "
+                        "(latitude, longitude, timestamp, "
+                        "accuracy, location_name)"
+                    )
+
+                location_id = self.gps_tracker.add_gps_reading(
+                    latitude,
+                    longitude,
+                    altitude=altitude,
+                    accuracy=accuracy,
+                    location_name=name,
+                    timestamp=source_timestamp,
+                )
+                print(
+                    f"   📍 {name}: "
+                    f"{float(latitude):.4f}, "
+                    f"{float(longitude):.4f} -> "
+                    f"{location_id}"
+                )
+
+            gps_available = bool(self.gps_tracker.locations)
+
+        else:
+            print(
+                "🛰️ Extracting source-timed GPS fixes "
+                "from Kismet packet rows..."
+            )
+
+            total_gps_fixes = 0
             for db_file in db_files_to_process:
-                db_count = self._load_appearances_with_gps(db_file, primary_location)
-                print(f"   📁 {os.path.basename(db_file)}: {db_count} device appearances")
+                gps_count = self._load_gps_fixes_from_kismet(
+                    db_file
+                )
+                print(
+                    f"   📁 {os.path.basename(db_file)}: "
+                    f"{gps_count} source-timed GPS fixes"
+                )
+                total_gps_fixes += gps_count
+
+            gps_available = total_gps_fixes > 0
+
+            if gps_available:
+                print(
+                    "🛰️ Total source-timed GPS fixes: "
+                    f"{total_gps_fixes}"
+                )
+            else:
+                print(
+                    "⚠️ No source-timed GPS fixes found; "
+                    "using unknown location labels"
+                )
+
+        # Load aggregate Kismet device states.
+        print(
+            "📡 Loading aggregate device states "
+            "from Kismet databases..."
+        )
+        total_count = 0
+
+        if gps_available:
+            for db_file in db_files_to_process:
+                db_count = self._load_appearances_with_gps(
+                    db_file
+                )
+                print(
+                    f"   📁 {os.path.basename(db_file)}: "
+                    f"{db_count} aggregate device states"
+                )
                 total_count += db_count
         else:
-            # Load from all databases without GPS correlation
             for db_file in db_files_to_process:
-                db_count = load_appearances_from_kismet(db_file, self.detector, "unknown_location")
-                print(f"   📁 {os.path.basename(db_file)}: {db_count} device appearances")
+                db_count = load_appearances_from_kismet(
+                    db_file,
+                    self.detector,
+                    "unknown_location",
+                )
+                print(
+                    f"   📁 {os.path.basename(db_file)}: "
+                    f"{db_count} aggregate device states"
+                )
                 total_count += db_count
-        
+
         print(f"✅ Total device appearances loaded: {total_count:,}")
         
         # Perform surveillance detection
@@ -223,7 +331,7 @@ class SurveillanceAnalyzer:
         
         # Generate KML file if GPS data available
         kml_file = None
-        if gps_data:
+        if gps_available:
             kml_file = f"kml_files/surveillance_analysis_{timestamp}.kml"
             print(f"🗺️ Generating KML visualization: {kml_file}")
             self.kml_exporter.generate_kml(self.gps_tracker, suspicious_devices, kml_file)
@@ -345,71 +453,259 @@ class SurveillanceAnalyzer:
         
         print(f"📊 Results exported to JSON: {output_file}")
     
-    def _load_appearances_with_gps(self, db_path: str, location_id: str) -> int:
-        """Load device appearances and register them with GPS tracker"""
+    def _load_gps_fixes_from_kismet(
+        self,
+        db_path: str,
+    ) -> int:
+        """Load source-timed GPS fixes from append-oriented packet rows."""
+
         import sqlite3
-        import json
-        
+
         try:
-            with sqlite3.connect(db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Get all devices with timestamps
-                cursor.execute("""
-                    SELECT devmac, last_time, type, device 
-                    FROM devices 
+            database_uri = (
+                Path(db_path).resolve().as_uri()
+                + "?mode=ro"
+            )
+
+            with closing(
+                sqlite3.connect(
+                    database_uri,
+                    uri=True,
+                )
+            ) as connection:
+                table_exists = connection.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name = 'packets'
+                    """
+                ).fetchone()
+
+                if table_exists is None:
+                    logger.warning(
+                        "Kismet database has no packets table: %s",
+                        db_path,
+                    )
+                    return 0
+
+                columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(packets)"
+                    )
+                }
+                required_columns = {
+                    "ts_sec",
+                    "ts_usec",
+                    "lat",
+                    "lon",
+                }
+                missing_columns = required_columns - columns
+
+                if missing_columns:
+                    logger.warning(
+                        "Kismet packets table is missing "
+                        "required GPS columns %s in %s",
+                        sorted(missing_columns),
+                        db_path,
+                    )
+                    return 0
+
+                altitude_expression = (
+                    "alt"
+                    if "alt" in columns
+                    else "NULL"
+                )
+
+                rows = connection.execute(
+                    f"""
+                    SELECT
+                        ts_sec,
+                        ts_usec,
+                        lat,
+                        lon,
+                        {altitude_expression}
+                    FROM packets
+                    WHERE lat IS NOT NULL
+                      AND lon IS NOT NULL
+                      AND lat != 0
+                      AND lon != 0
+                    ORDER BY ts_sec, ts_usec, rowid
+                    """
+                ).fetchall()
+
+            count = 0
+
+            for (
+                ts_sec,
+                ts_usec,
+                latitude,
+                longitude,
+                altitude,
+            ) in rows:
+                try:
+                    source_timestamp = (
+                        float(ts_sec)
+                        + float(ts_usec) / 1_000_000.0
+                    )
+
+                    self.gps_tracker.add_gps_reading(
+                        latitude,
+                        longitude,
+                        altitude=altitude,
+                        accuracy=None,
+                        location_name=f"GPS_{count + 1}",
+                        timestamp=source_timestamp,
+                    )
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Skipping invalid packet GPS row in %s: %s",
+                        db_path,
+                        exc,
+                    )
+                    continue
+
+                count += 1
+
+            logger.info(
+                "Loaded %d source-timed GPS fixes from %s",
+                count,
+                db_path,
+            )
+            return count
+
+        except sqlite3.Error as exc:
+            logger.error(
+                "Error loading source-timed GPS fixes from %s: %s",
+                db_path,
+                exc,
+            )
+            return 0
+
+    def _load_appearances_with_gps(
+        self,
+        db_path: str,
+    ) -> int:
+        """Correlate aggregate device last_time values to bounded GPS fixes."""
+
+        import sqlite3
+
+        try:
+            database_uri = (
+                Path(db_path).resolve().as_uri()
+                + "?mode=ro"
+            )
+
+            with closing(
+                sqlite3.connect(
+                    database_uri,
+                    uri=True,
+                )
+            ) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT devmac, last_time, type, device
+                    FROM devices
                     WHERE last_time > 0
                     ORDER BY last_time DESC
-                """)
-                
-                rows = cursor.fetchall()
-                count = 0
-                
-                # Set current location in GPS tracker for device correlation
-                if hasattr(self.gps_tracker, 'location_sessions') and self.gps_tracker.location_sessions:
-                    # Find the location session that matches our location_id
-                    for session in self.gps_tracker.location_sessions:
-                        if session.session_id == location_id:
-                            self.gps_tracker.current_location = session
-                            break
-                
-                for row in rows:
-                    mac, timestamp, device_type, device_json = row
-                    
-                    # Extract SSIDs from device JSON
-                    ssids_probed = []
-                    try:
-                        device_data = json.loads(device_json)
-                        dot11_device = device_data.get('dot11.device', {})
-                        if dot11_device:
-                            probe_record = dot11_device.get('dot11.device.last_probed_ssid_record', {})
-                            ssid = probe_record.get('dot11.probedssid.ssid')
-                            if ssid:
-                                ssids_probed = [ssid]
-                    except (json.JSONDecodeError, KeyError):
-                        pass
-                    
-                    # Add to surveillance detector
-                    self.detector.add_device_appearance(
-                        mac=mac,
-                        timestamp=timestamp,
-                        location_id=location_id,
-                        ssids_probed=ssids_probed,
-                        device_type=device_type
+                    """
+                ).fetchall()
+
+            count = 0
+
+            for (
+                mac,
+                source_timestamp,
+                device_type,
+                device_json,
+            ) in rows:
+                ssids_probed = []
+
+                try:
+                    device_data = json.loads(device_json)
+                    dot11_device = device_data.get(
+                        "dot11.device",
+                        {},
                     )
-                    
-                    # Also add to GPS tracker if current location is set
-                    if self.gps_tracker.current_location:
-                        self.gps_tracker.add_device_at_current_location(mac)
-                    
-                    count += 1
-                
-                logger.info(f"Loaded {count} device appearances from {db_path}")
-                return count
-                
-        except Exception as e:
-            logger.error(f"Error loading from Kismet database: {e}")
+                    probe_record = dot11_device.get(
+                        "dot11.device.last_probed_ssid_record",
+                        {},
+                    )
+                    ssid = probe_record.get(
+                        "dot11.probedssid.ssid"
+                    )
+                    if ssid:
+                        ssids_probed = [ssid]
+                except (
+                    json.JSONDecodeError,
+                    KeyError,
+                    TypeError,
+                ):
+                    pass
+
+                correlation = (
+                    self.gps_tracker.correlate_timestamp(
+                        source_timestamp
+                    )
+                )
+
+                if correlation is None:
+                    location_id = "unknown_location"
+                    gps_timestamp = None
+                    gps_latitude = None
+                    gps_longitude = None
+                    gps_accuracy = None
+                    source_to_fix_delta_ms = None
+                else:
+                    location_id = correlation.location_id
+                    gps_timestamp = correlation.gps_timestamp
+                    gps_latitude = correlation.latitude
+                    gps_longitude = correlation.longitude
+                    gps_accuracy = correlation.accuracy
+                    source_to_fix_delta_ms = (
+                        correlation.source_to_fix_delta_ms
+                    )
+
+                self.detector.add_device_appearance(
+                    mac=mac,
+                    timestamp=source_timestamp,
+                    location_id=location_id,
+                    ssids_probed=ssids_probed,
+                    device_type=device_type,
+                    gps_timestamp=gps_timestamp,
+                    gps_latitude=gps_latitude,
+                    gps_longitude=gps_longitude,
+                    gps_accuracy=gps_accuracy,
+                    source_to_fix_delta_ms=(
+                        source_to_fix_delta_ms
+                    ),
+                )
+
+                if correlation is not None:
+                    self.gps_tracker.add_device_to_session(
+                        mac,
+                        correlation.location_id,
+                    )
+
+                count += 1
+
+            logger.info(
+                "Loaded %d aggregate device states from %s",
+                count,
+                db_path,
+            )
+            return count
+
+        except sqlite3.Error as exc:
+            logger.error(
+                "Error loading aggregate device states "
+                "from %s: %s",
+                db_path,
+                exc,
+            )
             return 0
+
 
 def main():
     """Main CLI interface"""

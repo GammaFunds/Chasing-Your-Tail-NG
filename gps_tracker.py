@@ -6,182 +6,496 @@ import json
 import time
 import logging
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional, NamedTuple
+from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 import math
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class GPSLocation:
-    """GPS coordinate with metadata"""
+    """GPS coordinate with source-time metadata."""
+
     latitude: float
     longitude: float
     altitude: Optional[float] = None
-    timestamp: float = None
+    timestamp: Optional[float] = None
     accuracy: Optional[float] = None
     location_name: Optional[str] = None
+    cluster_id: Optional[str] = None
+    session_id: Optional[str] = None
 
-@dataclass 
+
+@dataclass
 class LocationSession:
-    """A session at a specific location"""
+    """A source-time-bounded visit to a spatial cluster."""
+
     location: GPSLocation
     start_time: float
     end_time: float
-    devices_seen: List[str]  # MAC addresses
+    devices_seen: List[str]
     session_id: str
+    cluster_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class GPSCorrelation:
+    """Nearest bounded GPS fix associated with a source timestamp."""
+
+    location_id: str
+    gps_timestamp: float
+    latitude: float
+    longitude: float
+    accuracy: Optional[float]
+    source_to_fix_delta_ms: float
+
 
 class GPSTracker:
-    """Track GPS locations and correlate with device appearances"""
-    
+    """Track source-timed GPS fixes and correlate aggregate device states."""
+
     def __init__(self, config: Dict):
         self.config = config
-        self.locations = []
-        self.location_sessions = []
-        self.current_location = None
-        
+        self.locations: List[GPSLocation] = []
+        self.location_sessions: List[LocationSession] = []
+        self.current_location: Optional[LocationSession] = None
+
         # Location clustering settings
-        self.location_threshold = 100  # meters - same location if within this distance
-        self.session_timeout = 600     # seconds - new session if gap longer than this
-        
-    def add_gps_reading(self, latitude: float, longitude: float, 
-                       altitude: float = None, accuracy: float = None,
-                       location_name: str = None) -> str:
-        """Add a GPS reading and return location ID"""
-        timestamp = time.time()
-        
-        location = GPSLocation(
-            latitude=latitude,
-            longitude=longitude,
-            altitude=altitude,
-            timestamp=timestamp,
-            accuracy=accuracy,
-            location_name=location_name
+        self.location_threshold = 100
+        self.session_timeout = 600
+
+        gps_config = config.get("gps", {}) if isinstance(config, dict) else {}
+        raw_max_delta = gps_config.get(
+            "max_correlation_delta_seconds",
+            30.0,
         )
-        
+
+        try:
+            max_delta = float(raw_max_delta)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "gps.max_correlation_delta_seconds must be finite"
+            ) from exc
+
+        if not math.isfinite(max_delta) or max_delta < 0:
+            raise ValueError(
+                "gps.max_correlation_delta_seconds must be finite and non-negative"
+            )
+
+        self.max_correlation_delta_seconds = max_delta
+
+    @staticmethod
+    def _require_source_timestamp(timestamp: Optional[float]) -> float:
+        if timestamp is None:
+            raise ValueError("GPS source timestamp is required")
+
+        try:
+            source_timestamp = float(timestamp)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "GPS source timestamp must be a finite Unix timestamp"
+            ) from exc
+
+        if not math.isfinite(source_timestamp):
+            raise ValueError(
+                "GPS source timestamp must be a finite Unix timestamp"
+            )
+
+        return source_timestamp
+
+    def add_gps_reading(
+        self,
+        latitude: float,
+        longitude: float,
+        altitude: float = None,
+        accuracy: float = None,
+        location_name: str = None,
+        timestamp: float = None,
+    ) -> str:
+        """Add an explicitly source-timed GPS fix and return its session ID."""
+
+        source_timestamp = self._require_source_timestamp(timestamp)
+
+        location = GPSLocation(
+            latitude=float(latitude),
+            longitude=float(longitude),
+            altitude=altitude,
+            timestamp=source_timestamp,
+            accuracy=accuracy,
+            location_name=location_name,
+        )
+
+        cluster_id = self._get_location_cluster_id(location)
+        session_id = self._update_current_session(location, cluster_id)
+
         self.locations.append(location)
-        
-        # Generate location ID (for clustering nearby locations)
-        location_id = self._get_location_cluster_id(location)
-        
-        # Update current location and session
-        self._update_current_session(location, location_id)
-        
-        logger.info(f"GPS reading added: {latitude:.6f}, {longitude:.6f} -> {location_id}")
-        return location_id
-    
+
+        logger.info(
+            "GPS source fix added: %.6f, %.6f at %.6f -> %s",
+            location.latitude,
+            location.longitude,
+            source_timestamp,
+            session_id,
+        )
+        return session_id
+
     def _get_location_cluster_id(self, location: GPSLocation) -> str:
-        """Get cluster ID for location (groups nearby locations)"""
-        # Check if this location is close to any existing session
+        """Return a stable spatial-cluster ID for a GPS fix."""
+
         for session in self.location_sessions:
-            distance = self._calculate_distance(location, session.location)
+            distance = self._calculate_distance(
+                location,
+                session.location,
+            )
             if distance <= self.location_threshold:
-                return session.session_id
-        
-        # Create new location cluster
+                return session.cluster_id or session.session_id
+
         if location.location_name:
-            base_name = location.location_name.replace(' ', '_')
+            base_name = location.location_name.replace(" ", "_")
         else:
-            # Generate name from coordinates
-            base_name = f"loc_{location.latitude:.4f}_{location.longitude:.4f}"
-        
-        # Make unique
-        existing_ids = [s.session_id for s in self.location_sessions]
-        counter = 1
-        location_id = base_name
-        while location_id in existing_ids:
-            location_id = f"{base_name}_{counter}"
+            base_name = (
+                f"loc_{location.latitude:.4f}_{location.longitude:.4f}"
+            )
+
+        existing_cluster_ids = {
+            session.cluster_id or session.session_id
+            for session in self.location_sessions
+        }
+
+        cluster_id = base_name
+        counter = 2
+
+        while cluster_id in existing_cluster_ids:
+            cluster_id = f"{base_name}_cluster_{counter}"
             counter += 1
-            
-        return location_id
-    
-    def _update_current_session(self, location: GPSLocation, location_id: str) -> None:
-        """Update current location session"""
-        now = time.time()
-        
-        # Find existing session or create new one
-        current_session = None
-        for session in self.location_sessions:
-            if session.session_id == location_id:
-                # Check if this continues the existing session
-                if now - session.end_time <= self.session_timeout:
-                    session.end_time = now
-                    current_session = session
-                    break
-        
-        if not current_session:
-            # Create new session
+
+        return cluster_id
+
+    def _new_session_id(self, cluster_id: str) -> str:
+        existing_session_ids = {
+            session.session_id
+            for session in self.location_sessions
+        }
+
+        if cluster_id not in existing_session_ids:
+            return cluster_id
+
+        counter = 2
+        session_id = f"{cluster_id}_session_{counter}"
+
+        while session_id in existing_session_ids:
+            counter += 1
+            session_id = f"{cluster_id}_session_{counter}"
+
+        return session_id
+
+    def _update_current_session(
+        self,
+        location: GPSLocation,
+        cluster_id: str,
+    ) -> str:
+        """Update sessions using source-time connected components."""
+
+        source_timestamp = self._require_source_timestamp(
+            location.timestamp
+        )
+
+        matching_sessions = [
+            session
+            for session in self.location_sessions
+            if (session.cluster_id or session.session_id)
+            == cluster_id
+        ]
+
+        eligible_sessions = []
+
+        for session in matching_sessions:
+            if (
+                session.start_time
+                <= source_timestamp
+                <= session.end_time
+            ):
+                temporal_distance = 0.0
+            elif source_timestamp < session.start_time:
+                temporal_distance = (
+                    session.start_time
+                    - source_timestamp
+                )
+            else:
+                temporal_distance = (
+                    source_timestamp
+                    - session.end_time
+                )
+
+            if temporal_distance <= self.session_timeout:
+                eligible_sessions.append(session)
+
+        if eligible_sessions:
+            merged_sessions = sorted(
+                eligible_sessions,
+                key=lambda session: (
+                    session.start_time,
+                    session.end_time,
+                    session.session_id,
+                ),
+            )
+
+            current_session = merged_sessions[0]
+            merged_session_ids = {
+                session.session_id
+                for session in merged_sessions
+            }
+            merged_object_ids = {
+                id(session)
+                for session in merged_sessions
+            }
+
+            earliest_location = min(
+                [
+                    location,
+                    *(
+                        session.location
+                        for session in merged_sessions
+                    ),
+                ],
+                key=lambda candidate: (
+                    self._require_source_timestamp(
+                        candidate.timestamp
+                    ),
+                    candidate.latitude,
+                    candidate.longitude,
+                    candidate.location_name or "",
+                ),
+            )
+
+            merged_devices = []
+
+            for session in merged_sessions:
+                for mac in session.devices_seen:
+                    if mac not in merged_devices:
+                        merged_devices.append(mac)
+
+            current_session.location = earliest_location
+            current_session.start_time = min(
+                source_timestamp,
+                *(
+                    session.start_time
+                    for session in merged_sessions
+                ),
+            )
+            current_session.end_time = max(
+                source_timestamp,
+                *(
+                    session.end_time
+                    for session in merged_sessions
+                ),
+            )
+            current_session.devices_seen = merged_devices
+            current_session.cluster_id = cluster_id
+
+            self.location_sessions = [
+                session
+                for session in self.location_sessions
+                if (
+                    id(session) not in merged_object_ids
+                    or session is current_session
+                )
+            ]
+
+            for existing_location in self.locations:
+                if (
+                    existing_location.session_id
+                    in merged_session_ids
+                ):
+                    existing_location.cluster_id = cluster_id
+                    existing_location.session_id = (
+                        current_session.session_id
+                    )
+
+        else:
+            session_id = self._new_session_id(cluster_id)
             current_session = LocationSession(
                 location=location,
-                start_time=now,
-                end_time=now,
+                start_time=source_timestamp,
+                end_time=source_timestamp,
                 devices_seen=[],
-                session_id=location_id
+                session_id=session_id,
+                cluster_id=cluster_id,
             )
             self.location_sessions.append(current_session)
-        
+
+        location.cluster_id = cluster_id
+        location.session_id = current_session.session_id
         self.current_location = current_session
-        logger.debug(f"Updated session: {location_id}")
-    
-    def _calculate_distance(self, loc1: GPSLocation, loc2: GPSLocation) -> float:
-        """Calculate distance between two GPS locations in meters"""
-        # Haversine formula
-        R = 6371000  # Earth's radius in meters
-        
+
+        logger.debug(
+            "Updated source-time session: %s",
+            current_session.session_id,
+        )
+        return current_session.session_id
+
+    def _calculate_distance(
+        self,
+        loc1: GPSLocation,
+        loc2: GPSLocation,
+    ) -> float:
+        """Calculate distance between two GPS locations in meters."""
+
+        earth_radius = 6371000
+
         lat1_rad = math.radians(loc1.latitude)
         lat2_rad = math.radians(loc2.latitude)
         delta_lat = math.radians(loc2.latitude - loc1.latitude)
         delta_lon = math.radians(loc2.longitude - loc1.longitude)
-        
-        a = (math.sin(delta_lat/2) * math.sin(delta_lat/2) +
-             math.cos(lat1_rad) * math.cos(lat2_rad) *
-             math.sin(delta_lon/2) * math.sin(delta_lon/2))
-        
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-        distance = R * c
-        
-        return distance
-    
-    def add_device_at_current_location(self, mac: str) -> Optional[str]:
-        """Record that a device was seen at current location"""
-        if not self.current_location:
-            logger.warning("No current location - cannot record device")
+
+        value = (
+            math.sin(delta_lat / 2) ** 2
+            + math.cos(lat1_rad)
+            * math.cos(lat2_rad)
+            * math.sin(delta_lon / 2) ** 2
+        )
+
+        central_angle = 2 * math.atan2(
+            math.sqrt(value),
+            math.sqrt(1 - value),
+        )
+        return earth_radius * central_angle
+
+    def correlate_timestamp(
+        self,
+        source_timestamp: float,
+    ) -> Optional[GPSCorrelation]:
+        """Return the nearest GPS fix within the configured time bound."""
+
+        try:
+            normalized_source_timestamp = float(source_timestamp)
+        except (TypeError, ValueError):
             return None
-        
-        if mac not in self.current_location.devices_seen:
-            self.current_location.devices_seen.append(mac)
-            logger.debug(f"Device {mac} seen at {self.current_location.session_id}")
-        
-        return self.current_location.session_id
-    
+
+        if not math.isfinite(normalized_source_timestamp):
+            return None
+
+        timed_locations = [
+            location
+            for location in self.locations
+            if location.timestamp is not None
+            and math.isfinite(float(location.timestamp))
+            and location.session_id is not None
+        ]
+
+        if not timed_locations:
+            return None
+
+        nearest_location = min(
+            timed_locations,
+            key=lambda location: (
+                abs(
+                    float(location.timestamp)
+                    - normalized_source_timestamp
+                ),
+                float(location.timestamp),
+            ),
+        )
+
+        delta_seconds = (
+            float(nearest_location.timestamp)
+            - normalized_source_timestamp
+        )
+
+        if (
+            abs(delta_seconds)
+            > self.max_correlation_delta_seconds
+        ):
+            return None
+
+        return GPSCorrelation(
+            location_id=nearest_location.session_id,
+            gps_timestamp=float(nearest_location.timestamp),
+            latitude=nearest_location.latitude,
+            longitude=nearest_location.longitude,
+            accuracy=nearest_location.accuracy,
+            source_to_fix_delta_ms=delta_seconds * 1000.0,
+        )
+
+    def add_device_to_session(
+        self,
+        mac: str,
+        session_id: str,
+    ) -> Optional[str]:
+        """Record a device identifier against an explicit session."""
+
+        for session in self.location_sessions:
+            if session.session_id != session_id:
+                continue
+
+            if mac not in session.devices_seen:
+                session.devices_seen.append(mac)
+                logger.debug(
+                    "Device %s associated with session %s",
+                    mac,
+                    session_id,
+                )
+            return session_id
+
+        logger.warning(
+            "Unknown location session %s for device %s",
+            session_id,
+            mac,
+        )
+        return None
+
+    def add_device_at_current_location(
+        self,
+        mac: str,
+    ) -> Optional[str]:
+        """Backward-compatible mutable-current-session wrapper."""
+
+        if not self.current_location:
+            logger.warning(
+                "No current location session - cannot record device"
+            )
+            return None
+
+        return self.add_device_to_session(
+            mac,
+            self.current_location.session_id,
+        )
+
     def get_current_location_id(self) -> Optional[str]:
-        """Get current location ID"""
+        """Get the current session ID."""
+
         if self.current_location:
             return self.current_location.session_id
         return None
-    
+
     def get_location_history(self) -> List[LocationSession]:
-        """Get chronological location history"""
-        return sorted(self.location_sessions, key=lambda s: s.start_time)
-    
+        """Get source-time-ordered session history."""
+
+        return sorted(
+            self.location_sessions,
+            key=lambda session: (
+                session.start_time,
+                session.session_id,
+            ),
+        )
+
     def get_devices_across_locations(self) -> Dict[str, List[str]]:
-        """Get devices that appeared across multiple locations"""
-        device_locations = {}
-        
+        """Get devices associated with multiple session labels."""
+
+        device_locations: Dict[str, List[str]] = {}
+
         for session in self.location_sessions:
             for mac in session.devices_seen:
-                if mac not in device_locations:
-                    device_locations[mac] = []
+                device_locations.setdefault(mac, [])
                 if session.session_id not in device_locations[mac]:
                     device_locations[mac].append(session.session_id)
-        
-        # Filter to devices seen at multiple locations
-        multi_location_devices = {
-            mac: locations for mac, locations in device_locations.items()
+
+        return {
+            mac: locations
+            for mac, locations in device_locations.items()
             if len(locations) > 1
         }
-        
-        return multi_location_devices
+
 
 class KMLExporter:
     """Export GPS and device data to KML format for Google Earth"""
@@ -1002,14 +1316,47 @@ class KMLExporter:
         logger.warning(f"Empty KML generated: {output_file}")
         return kml_output
 
-def simulate_gps_data() -> List[Tuple[float, float, str]]:
-    """Generate simulated GPS data for testing"""
-    # Simulate a route with multiple stops
+def simulate_gps_data() -> List[
+    Tuple[float, float, float, Optional[float], str]
+]:
+    """Generate deterministic source-timed GPS data for testing."""
+
+    base_timestamp = 1700000000.0
     locations = [
-        (33.4484, -112.0740, "Phoenix_Home"),
-        (33.4734, -112.0431, "Phoenix_Office"), 
-        (33.5076, -112.0726, "Phoenix_Mall"),
-        (33.4942, -112.1122, "Phoenix_Restaurant"),
-        (33.4484, -112.0740, "Phoenix_Home_Return")
+        (
+            33.4484,
+            -112.0740,
+            base_timestamp,
+            5.0,
+            "Phoenix_Home",
+        ),
+        (
+            33.4734,
+            -112.0431,
+            base_timestamp + 900.0,
+            5.0,
+            "Phoenix_Office",
+        ),
+        (
+            33.5076,
+            -112.0726,
+            base_timestamp + 1800.0,
+            6.0,
+            "Phoenix_Mall",
+        ),
+        (
+            33.4942,
+            -112.1122,
+            base_timestamp + 2700.0,
+            6.0,
+            "Phoenix_Restaurant",
+        ),
+        (
+            33.4484,
+            -112.0740,
+            base_timestamp + 3600.0,
+            5.0,
+            "Phoenix_Home_Return",
+        ),
     ]
     return locations

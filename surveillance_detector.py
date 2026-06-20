@@ -15,13 +15,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DeviceAppearance:
-    """Record of when/where a device was seen"""
+    """Aggregate device-state timestamp with optional GPS correlation."""
+
     mac: str
     timestamp: float
-    location_id: str  # GPS coordinates or location name
+    location_id: str
     ssids_probed: List[str]
     signal_strength: Optional[float] = None
     device_type: Optional[str] = None
+    gps_timestamp: Optional[float] = None
+    gps_latitude: Optional[float] = None
+    gps_longitude: Optional[float] = None
+    gps_accuracy: Optional[float] = None
+    source_to_fix_delta_ms: Optional[float] = None
 
 @dataclass
 class SuspiciousDevice:
@@ -50,23 +56,44 @@ class SurveillanceDetector:
             'min_persistence_score': 0.5    # Minimum score to be flagged
         }
     
-    def add_device_appearance(self, mac: str, timestamp: float, location_id: str, 
-                            ssids_probed: List[str] = None, signal_strength: float = None,
-                            device_type: str = None) -> None:
-        """Record a device appearance"""
+    def add_device_appearance(
+        self,
+        mac: str,
+        timestamp: float,
+        location_id: str,
+        ssids_probed: List[str] = None,
+        signal_strength: float = None,
+        device_type: str = None,
+        gps_timestamp: float = None,
+        gps_latitude: float = None,
+        gps_longitude: float = None,
+        gps_accuracy: float = None,
+        source_to_fix_delta_ms: float = None,
+    ) -> None:
+        """Record an aggregate device state and optional GPS correlation."""
+
         appearance = DeviceAppearance(
             mac=mac,
             timestamp=timestamp,
             location_id=location_id,
             ssids_probed=ssids_probed or [],
             signal_strength=signal_strength,
-            device_type=device_type
+            device_type=device_type,
+            gps_timestamp=gps_timestamp,
+            gps_latitude=gps_latitude,
+            gps_longitude=gps_longitude,
+            gps_accuracy=gps_accuracy,
+            source_to_fix_delta_ms=source_to_fix_delta_ms,
         )
-        
+
         self.appearances.append(appearance)
         self.device_history[mac].append(appearance)
-        
-        logger.debug(f"Recorded appearance: {mac} at {location_id}")
+
+        logger.debug(
+            "Recorded aggregate device state: %s at %s",
+            mac,
+            location_id,
+        )
     
     def analyze_surveillance_patterns(self) -> List[SuspiciousDevice]:
         """Analyze all devices for surveillance patterns"""

@@ -183,9 +183,24 @@ class EvidenceLanguageTests(unittest.TestCase):
             report = call_named(detector, ["generate_", "sur", "veillance", "_report"], str(report_path))
 
             gps_tracker = GPSTracker({})
-            gps_tracker.add_gps_reading(33.4484, -112.0740, location_name="L1")
-            gps_tracker.add_gps_reading(33.5076, -112.0726, location_name="L2")
-            gps_tracker.add_gps_reading(33.4942, -112.1122, location_name="L3")
+            gps_tracker.add_gps_reading(
+                33.4484,
+                -112.0740,
+                location_name="L1",
+                timestamp=1000.0,
+            )
+            gps_tracker.add_gps_reading(
+                33.5076,
+                -112.0726,
+                location_name="L2",
+                timestamp=3600.0,
+            )
+            gps_tracker.add_gps_reading(
+                33.4942,
+                -112.1122,
+                location_name="L3",
+                timestamp=7200.0,
+            )
 
             kml_path = Path(tmpdir) / "review.kml"
             kml = KMLExporter().generate_kml(
