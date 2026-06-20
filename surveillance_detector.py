@@ -122,7 +122,7 @@ class SurveillanceDetector:
             # Bonus if seen across multiple locations
             unique_locations = len(set(a.location_id for a in appearances))
             if unique_locations > 1:
-                reasons.append(f"Followed across {unique_locations} different locations")
+                reasons.append(f"Observed across {unique_locations} location labels")
                 score = min(score + 0.3, 1.0)
             
             return score, reasons
@@ -146,7 +146,6 @@ class SurveillanceDetector:
                 'temporal_clustering': 0,
                 'off_hours_rate': 0,
                 'probe_anomaly_rate': 0,
-                'detection_accuracy': 0.95
             }
         
         # Basic metrics
@@ -220,7 +219,6 @@ class SurveillanceDetector:
             'temporal_clustering': temporal_clustering,
             'off_hours_rate': off_hours_rate,
             'probe_anomaly_rate': probe_anomaly_rate,
-            'detection_accuracy': 0.95  # Based on algorithm validation
         }
     
     def _format_detailed_device_analysis(self, device: SuspiciousDevice, persistence_level: str) -> str:
@@ -235,49 +233,47 @@ class SurveillanceDetector:
         lines.append("")
         lines.append("*A MAC address is like a unique fingerprint for each wireless device (phone, laptop, etc.)*")
         lines.append("")
-        lines.append("**📊 Persistence Analysis:**")
+        lines.append("**📊 Heuristic Persistence Analysis:**")
         lines.append(f"- **Pattern Type:** {persistence_level} FREQUENCY")
-        lines.append(f"- **Persistence Score:** {device.persistence_score:.3f}/1.000 *(Higher = More Suspicious)*")
-        lines.append(f"- **Confidence:** {min(device.persistence_score * 100, 95):.1f}% *(How sure we are this is suspicious)*")
+        lines.append(f"- **Heuristic Persistence Score:** {device.persistence_score:.3f}/1.000 *(Higher = More Persistent)*")
         lines.append(f"- **Pattern Analysis:** {'📊 High-frequency appearance pattern' if persistence_level == 'CRITICAL' else '📈 Notable appearance pattern' if persistence_level == 'HIGH' else '📋 Low-frequency pattern'}")
         lines.append("")
         
         # Temporal analysis with explanations
         duration = device.last_seen - device.first_seen
         duration_hours = duration.total_seconds() / 3600
-        lines.append("**⏰ Time-Based Behavior Analysis:**")
-        lines.append("*This shows how long the device has been appearing and how often*")
+        lines.append("**⏰ Time-Based Observation Analysis:**")
+        lines.append("*This shows how long the device has been observed and how often it appears*")
         lines.append("")
-        lines.append(f"- **Total Surveillance Period:** {duration_hours:.1f} hours ({duration.days} days)")
+        lines.append(f"- **Total Observation Period:** {duration_hours:.1f} hours ({duration.days} days)")
         lines.append(f"- **First Time Spotted:** {device.first_seen.strftime('%Y-%m-%d %H:%M:%S')}")
-        lines.append(f"- **Most Recent Sighting:** {device.last_seen.strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"- **Most Recent Observation:** {device.last_seen.strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"- **Total Appearances:** {device.total_appearances} times")
         lines.append(f"- **How Often It Appears:** {device.total_appearances / max(duration_hours, 1):.2f} times per hour")
         lines.append("")
         if device.total_appearances > 10:
-            lines.append("  📊 **Analysis:** This device appears very frequently, which is unusual for normal devices.")
+            lines.append("  📊 **Analysis:** This device appears very frequently.")
         elif device.total_appearances > 5:
-            lines.append("  📊 **Analysis:** This device appears regularly, worth monitoring.")
+            lines.append("  📊 **Analysis:** This device appears regularly.")
         else:
-            lines.append("  📊 **Analysis:** Low appearance count, may not be actively tracking.")
+            lines.append("  📊 **Analysis:** Low appearance count.")
         lines.append("")
         
         # Geographic analysis with explanations
-        lines.append("**🗺️ Location Tracking Analysis:**")
-        lines.append("*This shows whether the device follows you to different places*")
+        lines.append("**🗺️ Location Label Analysis:**")
+        lines.append("*This shows which location labels were associated with the observations*")
         lines.append("")
-        lines.append(f"- **Different Locations Seen:** {len(device.locations_seen)}")
+        lines.append(f"- **Location Labels Observed:** {len(device.locations_seen)}")
         lines.append(f"- **Specific Locations:** {', '.join(device.locations_seen)}")
         if len(device.locations_seen) > 1:
-            lines.append(f"- **Following Behavior:** ✅ **CONFIRMED** - This device has appeared at multiple locations")
-            lines.append("  🚨 **This is a major red flag - normal devices don't follow you around!**")
+            lines.append(f"- **Multi-location Observation:** Observed across {len(device.locations_seen)} location labels")
+            lines.append("  ℹ️ This observation does not establish following, identity, stalking, surveillance, coordination, or intent.")
         else:
-            lines.append(f"- **Following Behavior:** ❌ Only seen at one location")
-            lines.append("  ℹ️ **This could be a local device, but monitor for movement**")
+            lines.append(f"- **Multi-location Observation:** Observed in one location label")
         lines.append("")
         
         # Behavioral indicators
-        lines.append("**Behavioral Threat Indicators:**")
+        lines.append("**Behavioral Review Indicators:**")
         for i, reason in enumerate(device.reasons, 1):
             lines.append(f"  {i}. {reason}")
         lines.append("")
@@ -299,8 +295,8 @@ class SurveillanceDetector:
         lines.append("- 📊 **Data Analysis**: This device showed repeated appearances in your wireless environment")
         lines.append("- 🔍 **Consider**: This pattern might be worth noting or monitoring")
         lines.append("- 📝 **Documentation**: You could keep a log of when/where this device appears")
-        lines.append("- 🤔 **Context**: Remember this could be a neighbor, business device, or normal wireless traffic")
-        lines.append("- ⚖️ **Disclaimer**: These are statistical patterns only - not definitive proof of surveillance")
+        lines.append("- 🤔 **Context**: Repeated identifiers can come from many sources")
+        lines.append("- ⚖️ **Disclaimer**: These are heuristic observations only")
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -343,13 +339,13 @@ class SurveillanceDetector:
                         regular_interval_devices += 1
         
         if work_hour_devices > 0:
-            patterns.append(f"**{work_hour_devices} devices** show work-hours-only activity (9 AM - 5 PM) - possible workplace surveillance")
+            patterns.append(f"**{work_hour_devices} devices** show activity concentrated in daytime hours (9 AM - 5 PM)")
         
         if off_hour_devices > 0:
-            patterns.append(f"**{off_hour_devices} devices** show off-hours activity (10 PM - 6 AM) - possible stalking behavior")
+            patterns.append(f"**{off_hour_devices} devices** show activity concentrated outside daytime hours (10 PM - 6 AM)")
         
         if regular_interval_devices > 0:
-            patterns.append(f"**{regular_interval_devices} devices** appear at highly regular intervals - possible automated tracking")
+            patterns.append(f"**{regular_interval_devices} devices** appear at highly regular intervals")
         
         # Day of week analysis
         weekday_heavy = 0
@@ -370,13 +366,13 @@ class SurveillanceDetector:
                 weekend_heavy += 1
         
         if weekday_heavy > 0:
-            patterns.append(f"**{weekday_heavy} devices** appear primarily on weekdays - consistent with workplace/professional surveillance")
+            patterns.append(f"**{weekday_heavy} devices** appear primarily on weekdays")
         
         if weekend_heavy > 0:
-            patterns.append(f"**{weekend_heavy} devices** appear primarily on weekends - may indicate personal stalking")
-        
+            patterns.append(f"**{weekend_heavy} devices** appear primarily on weekends")
+
         if not patterns:
-            patterns.append("No significant temporal patterns detected across suspicious devices")
+            patterns.append("No significant temporal patterns detected across reviewed devices")
         
         return patterns
     
@@ -390,7 +386,7 @@ class SurveillanceDetector:
         # Multi-location tracking analysis
         multi_location_count = len([d for d in suspicious_devices if len(d.locations_seen) > 1])
         if multi_location_count > 0:
-            patterns.append(f"**{multi_location_count} devices** confirmed following across multiple locations")
+            patterns.append(f"**{multi_location_count} devices** observed across multiple location labels")
         
         # Location correlation analysis
         location_frequency = {}
@@ -398,9 +394,9 @@ class SurveillanceDetector:
             for location in device.locations_seen:
                 location_frequency[location] = location_frequency.get(location, 0) + 1
         
-        hotspot_locations = [loc for loc, count in location_frequency.items() if count > 1]
-        if hotspot_locations:
-            patterns.append(f"**Surveillance hotspots detected:** {', '.join(hotspot_locations)} - multiple suspicious devices at these locations")
+        repeated_locations = [loc for loc, count in location_frequency.items() if count > 1]
+        if repeated_locations:
+            patterns.append(f"**Repeated location labels observed:** {', '.join(repeated_locations)}")
         
         # Quick transition analysis
         quick_followers = 0
@@ -412,16 +408,16 @@ class SurveillanceDetector:
                     curr_loc = sorted_appearances[i].location_id
                     time_diff = sorted_appearances[i].timestamp - sorted_appearances[i-1].timestamp
                     
-                    # If location changed within 30 minutes = quick following
+                    # If location changed within 30 minutes = quick transition
                     if prev_loc != curr_loc and time_diff < 1800:
                         quick_followers += 1
                         break
-        
+
         if quick_followers > 0:
-            patterns.append(f"**{quick_followers} devices** show rapid location transitions (< 30 minutes) - active following behavior")
-        
+            patterns.append(f"**{quick_followers} devices** show rapid location-label transitions (< 30 minutes)")
+
         if not patterns:
-            patterns.append("No significant geographic tracking patterns detected")
+            patterns.append("No significant geographic patterns detected across reviewed devices")
         
         return patterns
     
@@ -450,7 +446,7 @@ class SurveillanceDetector:
                             temporal_matches += 1
                 
                 if temporal_matches > 2:
-                    correlations.append(f"**{device1.mac}** and **{device2.mac}** appear together {temporal_matches} times - possible coordinated surveillance")
+                    correlations.append(f"**{device1.mac}** and **{device2.mac}** appear together {temporal_matches} times at shared location labels")
         
         return correlations
     
@@ -464,123 +460,123 @@ class SurveillanceDetector:
         report = []
         
         # Professional header with metadata
-        report.append("# 🛡️ SURVEILLANCE DETECTION ANALYSIS")
-        report.append("## Personal Safety & Privacy Report")
+        report.append("# 🛡️ CYT HEURISTIC PERSISTENCE REVIEW")
+        report.append("## Personal Privacy Review")
         report.append("")
         report.append("### 📖 What This Report Does")
         report.append("")
-        report.append("This analysis examines wireless devices around you to detect potential surveillance or stalking. Here's how it works:")
+        report.append("This analysis examines wireless devices around you to describe repeated heuristic observations. Here's how it works:")
         report.append("")
         report.append("**🔍 What We Monitor:**")
-        report.append("- Wireless devices (phones, laptops, tracking devices) that appear near you")
-        report.append("- Whether the same devices show up repeatedly or follow you to different locations")
-        report.append("- Unusual patterns that might indicate someone is tracking your movements")
+        report.append("- Wireless devices (phones, laptops, other identifiers) that appear near you")
+        report.append("- Whether the same identifiers show up repeatedly or across different location labels")
+        report.append("- Repeated patterns that may justify a heuristic review")
         report.append("")
         report.append("**🎯 What We Look For:**")
         report.append("- **Persistence:** Devices that keep appearing over time")
-        report.append("- **Following:** Devices that show up at your home, work, and other locations")
-        report.append("- **Suspicious Timing:** Devices active during unusual hours or at regular intervals")
-        report.append("- **Tracking Behavior:** Patterns that suggest intentional surveillance")
+        report.append("- **Multi-location observations:** Devices that appear under more than one location label")
+        report.append("- **Timing patterns:** Devices active during unusual hours or at regular intervals")
+        report.append("- **Correlation patterns:** Repeated co-occurrence across labels or time windows")
         report.append("")
-        report.append("**✅ Your Safety:** If no persistent_devices are found, your wireless environment appears normal and safe.")
-        report.append("**⚠️ Threats Detected:** If suspicious devices are identified, we'll explain exactly what's concerning and what you should do.")
+        report.append("**Notice:** Aggregated source data may not correspond to distinct sightings.")
+        report.append("**Notice:** This report does not establish identity or intent.")
         report.append("")
         report.append("---")
         report.append("")
         report.append("## 📊 ANALYSIS SUMMARY")
         report.append(f"**Report Generated:** {datetime.now().strftime('%A, %B %d, %Y at %H:%M:%S')}")
-        report.append(f"**Analysis Engine:** CYT Advanced Threat Detection v2.1")
-        report.append(f"**Analysis Type:** Automated Surveillance Detection")
+        report.append(f"**Analysis Engine:** CYT Heuristic Observation Review System v2.1")
+        report.append(f"**Analysis Type:** Automated Repeated-Observation Review")
         report.append("")
         
         # Threat Level Assessment
         if not suspicious_devices:
-            persistence_level = "🟢 **LOW ACTIVITY**"
-            threat_color = "GREEN"
+            persistence_level = "🟢 **LOW HEURISTIC PERSISTENCE**"
+            threat_color = "NEUTRAL"
         else:
             high_persistence_count = len([d for d in suspicious_devices if d.persistence_score > 0.8])
             medium_threat_count = len([d for d in suspicious_devices if 0.6 <= d.persistence_score <= 0.8])
             
             if high_persistence_count > 0:
-                persistence_level = "🔴 **HIGH ACTIVITY**"
-                threat_color = "RED"
+                persistence_level = "🔴 **HIGH HEURISTIC PERSISTENCE**"
+                threat_color = "HIGH"
             elif medium_threat_count > 2:
-                persistence_level = "🟡 **MEDIUM ACTIVITY**" 
-                threat_color = "ORANGE"
+                persistence_level = "🟡 **MODERATE HEURISTIC PERSISTENCE**"
+                threat_color = "ELEVATED"
             else:
-                persistence_level = "🟡 **ELEVATED ACTIVITY**"
-                threat_color = "YELLOW"
+                persistence_level = "🟡 **ELEVATED HEURISTIC PERSISTENCE**"
+                threat_color = "ELEVATED"
         
         report.append("## 📊 ANALYSIS OVERVIEW")
         report.append("")
-        report.append(f"**Activity Level:** {persistence_level}")
-        report.append(f"**Assessment:** {threat_color}")
+        report.append(f"**Heuristic Persistence Band:** {persistence_level}")
+        report.append(f"**Review Band:** {threat_color}")
         report.append(f"**Monitoring Period:** {stats['analysis_duration_hours']:.1f} hours")
         report.append(f"**Total Device Appearances:** {stats['total_appearances']:,}")
         report.append(f"**Unique Devices Tracked:** {stats['unique_devices']:,}")
-        report.append(f"**Suspicious Devices Identified:** {len(suspicious_devices)}")
+        report.append(f"**Identifiers Meeting Review Threshold:** {len(suspicious_devices)}")
         report.append(f"**Geographic Locations Analyzed:** {stats['unique_locations']}")
         report.append("")
         
         # Advanced Analytics Dashboard with explanations
-        report.append("## 📊 SURVEILLANCE ANALYTICS DASHBOARD")
+        report.append("## 📊 HEURISTIC ACTIVITY REVIEW DASHBOARD")
         report.append("")
-        report.append("*This dashboard analyzes your wireless environment for suspicious patterns that could indicate surveillance or stalking.*")
+        report.append("*This dashboard summarizes repeated identifier and location-label observations.*")
+        report.append("*It summarizes heuristic review signals and does not confirm identity or intent.*")
         report.append("")
         report.append("| Metric | Value | Risk Indicator | What This Means |")
         report.append("|--------|-------|----------------|-----------------|")
-        report.append(f"| **Device Persistence Rate** | {stats['persistence_rate']:.1%} | {'🔴 High' if stats['persistence_rate'] > 0.3 else '🟡 Medium' if stats['persistence_rate'] > 0.15 else '🟢 Normal'} | Percentage of devices that appear repeatedly over time. High rates may indicate surveillance devices staying near you. |")
-        report.append(f"| **Multi-Location Tracking** | {stats['multi_location_rate']:.1%} | {'🔴 Critical' if stats['multi_location_rate'] > 0.2 else '🟡 Elevated' if stats['multi_location_rate'] > 0.1 else '🟢 Normal'} | Percentage of devices that follow you across different locations. This is a strong indicator of stalking/surveillance. |")
-        report.append(f"| **Analysis Time Period** | {stats['analysis_duration_hours']:.1f} hours | {'🟢 Comprehensive' if stats['analysis_duration_hours'] > 12 else '🟡 Moderate' if stats['analysis_duration_hours'] > 6 else '🔴 Limited'} | How long the monitoring period covered. Longer periods provide more reliable results. |")
-        report.append(f"| **Data Quality Score** | {min(95, int(stats['detection_accuracy'] * 100))}% | {'🟢 Excellent' if stats['detection_accuracy'] > 0.9 else '🟡 Good' if stats['detection_accuracy'] > 0.8 else '🔴 Poor'} | Reliability of the analysis based on data completeness and GPS accuracy. |")
+        report.append(f"| **Device Persistence Rate** | {stats['persistence_rate']:.1%} | {'🔴 Higher' if stats['persistence_rate'] > 0.3 else '🟡 Moderate' if stats['persistence_rate'] > 0.15 else '🟢 Lower'} | Percentage of devices that appear repeatedly over time. |")
+        report.append(f"| **Multi-Location Observation** | {stats['multi_location_rate']:.1%} | {'🔴 Higher' if stats['multi_location_rate'] > 0.2 else '🟡 Moderate' if stats['multi_location_rate'] > 0.1 else '🟢 Lower'} | Percentage of devices observed under more than one location label. |")
+        report.append(f"| **Analysis Time Period** | {stats['analysis_duration_hours']:.1f} hours | {'🟢 Longer' if stats['analysis_duration_hours'] > 12 else '🟡 Moderate' if stats['analysis_duration_hours'] > 6 else '🔴 Short'} | How long the monitoring period covered. |")
         report.append("")
         
         # Add explanatory section
         report.append("### 🤔 What Do These Numbers Mean?")
         report.append("")
-        report.append("**Device Persistence Rate:** In a normal environment, most devices (phones, laptops) appear briefly and then leave. If many devices keep appearing repeatedly, it could indicate:")
-        report.append("- Someone might be deliberately staying near your location")
-        report.append("- Surveillance equipment could potentially be planted nearby")
-        report.append("- *Normal range: Under 15% | Concerning: Over 30%*")
+        report.append("**Device Persistence Rate:** Higher values mean more repeated observations of the same identifiers.")
+        report.append("- Repeated appearance can reflect many different causes")
+        report.append("- The score is a heuristic review signal, not proof")
         report.append("")
-        report.append("**Multi-Location Tracking:** This is often considered the most serious indicator. If the same devices appear at your home, work, and other locations, it might suggest:")
-        report.append("- Someone could be following you")
-        report.append("- Stalking or surveillance could potentially be occurring")
-        report.append("- *Normal range: Under 10% | Critical: Over 20%*")
+        report.append("**Multi-Location Observation:** This shows whether the same identifier was observed under multiple location labels.")
+        report.append("- It does not establish identity or intent")
         report.append("")
-        report.append("**Analysis Time Period:** Shows how long your monitoring covered. Longer periods provide more reliable results:")
-        report.append("- Short periods (under 6 hours) might miss patterns")
-        report.append("- Longer periods (over 12 hours) give comprehensive coverage")
-        report.append("- *Recommended: At least 12+ hours | Optimal: 24+ hours*")
+        report.append("**Analysis Time Period:** Shows how long the monitoring covered.")
+        report.append("- Short periods may miss patterns")
+        report.append("- Longer periods capture more observations")
         report.append("")
-        report.append("**Data Quality Score:** Indicates how reliable the analysis results are based on:")
-        report.append("- Completeness of the wireless data collected")
-        report.append("- GPS accuracy and location correlation quality")
-        report.append("- *Excellent: 90%+ | Good: 80-89% | Poor: Under 80%*")
+        report.append("**Location Labels:** The location label is an analysis label, not proof of precise device position.")
+        report.append("")
+        report.append("**Limitations:**")
+        report.append("- Aggregated source data may combine rows that do not represent distinct sightings.")
+        report.append("- MAC randomization may split one physical device across multiple identifiers.")
+        report.append("- Shared devices and static devices can both create repeated observations.")
+        report.append("- Location labels are analysis labels rather than proof of precise device position.")
+        report.append("- The output does not establish identity or intent.")
         report.append("")
         
         if suspicious_devices:
-            report.append("## 📊 PERSISTENT DEVICE ANALYSIS")
+            report.append("## 📊 HEURISTIC PERSISTENCE ANALYSIS")
             report.append("")
             report.append("*The following devices showed repeated wireless activity patterns in your environment.*")
             report.append("")
             
             # Explain threat scoring system
-            report.append("### 🎯 How Persistence Scores Work")
+            report.append("### 🎯 How Heuristic Persistence Scores Work")
             report.append("")
-            report.append("Each device gets a **Persistence Score** from 0.0 to 1.0 based on suspicious behaviors:")
+            report.append("Each device gets a **Heuristic Persistence Score** from 0.0 to 1.0 based on repeated-observation behaviors:")
             report.append("")
-            report.append("**🟢 Normal (0.0-0.5):** Typical behavior - device appears briefly, doesn't follow you")
-            report.append("**🟡 Suspicious (0.6-0.7):** Some concerning patterns - appears multiple times or locations")  
-            report.append("**⚠️ High Threat (0.8-0.9):** Strong surveillance indicators - follows you, appears regularly")
-            report.append("**🚨 Critical (0.9-1.0):** Almost certain surveillance - tracks you across locations with suspicious timing")
+            report.append("**🟢 Low (0.0-0.5):** Limited repeated observation")
+            report.append("**🟡 Moderate (0.6-0.7):** Multiple observations or labels")
+            report.append("**🟠 Elevated (0.8-0.9):** Strong repeated-observation pattern")
+            report.append("**🔴 High (0.9-1.0):** Very persistent repeated observation across labels and time windows")
             report.append("")
-            report.append("**What Makes a Device Suspicious:**")
+            report.append("**What Raises the Heuristic Review Score:**")
             report.append("- **Appears repeatedly** at the same location over hours/days")
-            report.append("- **Follows you** to different locations (home, work, store)")
+            report.append("- **Observed across multiple location labels**")
             report.append("- **Regular timing** - shows up at predictable times")
             report.append("- **Night activity** - appears during unusual hours")  
-            report.append("- **Suspicious scanning** - searches for networks with concerning names")
+            report.append("- **SSID anomalies** - searches for networks with unusual names")
             report.append("")
             
             # Threat classification
@@ -590,71 +586,73 @@ class SurveillanceDetector:
             low_persistent_devices = [d for d in suspicious_devices if d.persistence_score < 0.6]
             
             if critical_persistent_devices:
-                report.append("### 📊 VERY HIGH PERSISTENCE DEVICES (Score > 0.9)")
+                report.append("### 📊 VERY HIGH HEURISTIC PERSISTENCE DEVICES (Score > 0.9)")
                 report.append("*These devices appeared very frequently in your wireless environment*")
                 report.append("")
                 for device in critical_persistent_devices:
                     report.append(self._format_detailed_device_analysis(device, "CRITICAL"))
             
             if high_persistences:
-                report.append("### 📈 HIGH PERSISTENCE DEVICES (Score 0.8-0.9)")
+                report.append("### 📈 HIGH HEURISTIC PERSISTENCE DEVICES (Score 0.8-0.9)")
                 report.append("*These devices appeared frequently and might be worth noting*")
                 report.append("")
                 for device in high_persistences:
                     report.append(self._format_detailed_device_analysis(device, "HIGH"))
             
             if medium_persistent_devices:
-                report.append("### 📋 MODERATE PERSISTENCE DEVICES (Score 0.6-0.8)")
+                report.append("### 📋 MODERATE HEURISTIC PERSISTENCE DEVICES (Score 0.6-0.8)")
                 report.append("*These devices showed some repeated wireless activity*")
                 report.append("")
                 for device in medium_persistent_devices:
                     report.append(self._format_detailed_device_analysis(device, "MEDIUM"))
             
             # Behavioral pattern analysis
-            report.append("## 🔍 BEHAVIORAL PATTERN ANALYSIS")
+            report.append("## 🔍 BEHAVIORAL REVIEW ANALYSIS")
             report.append("")
             
             # Temporal analysis
-            report.append("### ⏰ Temporal Patterns")
+            report.append("### ⏰ Temporal Review Patterns")
             temporal_patterns = self._analyze_temporal_patterns(suspicious_devices)
             for pattern in temporal_patterns:
                 report.append(f"- {pattern}")
             report.append("")
             
             # Geographic analysis
-            report.append("### 🗺️ Geographic Tracking Patterns")
+            report.append("### 🗺️ Location-Label Review Patterns")
             geo_patterns = self._analyze_geographic_patterns(suspicious_devices)
             for pattern in geo_patterns:
                 report.append(f"- {pattern}")
             report.append("")
             
             # Device correlation analysis
-            report.append("### 🔗 Device Correlation Matrix")
+            report.append("### 🔗 Device Co-Occurrence Matrix")
             correlations = self._analyze_device_correlations(suspicious_devices)
             if correlations:
-                report.append("*Devices that appear together may indicate coordinated surveillance*")
+                report.append("*Devices that appear together may justify review of co-occurrence patterns*")
                 report.append("")
                 for correlation in correlations:
                     report.append(f"- {correlation}")
             else:
-                report.append("- No significant device correlations detected")
+                report.append("- No significant co-occurrence patterns detected")
             report.append("")
             
         else:
-            report.append("## ✅ CLEAN ENVIRONMENT DETECTED")
+            report.append("## NO IDENTIFIERS MET THE HEURISTIC REVIEW THRESHOLD")
             report.append("")
-            report.append("**Analysis Result:** No suspicious surveillance patterns identified in the monitored environment.")
+            report.append("**Analysis Result:** No identifiers met the heuristic review threshold.")
+            report.append("")
+            report.append("**Important:** This result does not rule out repeated observations outside the review window. This result does not establish environmental safety.")
             report.append("")
             report.append("**Assessment Details:**")
-            report.append(f"- **{stats['unique_devices']:,} unique devices** analyzed across **{stats['unique_locations']} locations**")
+            report.append(f"- **{stats['unique_devices']:,} unique devices** analyzed across **{stats['unique_locations']} location labels**")
             report.append(f"- **{stats['total_appearances']:,} device appearances** processed over **{stats['analysis_duration_hours']:.1f} hours**")
-            report.append("- All device behaviors fall within normal operational parameters")
-            report.append("- No cross-location tracking patterns detected")
-            report.append("- Temporal analysis shows natural distribution patterns")
+            report.append("- No identifiers exceeded the heuristic review threshold")
+            report.append("- No multi-location review signals were produced")
+            report.append("- Temporal review signals did not cross the threshold")
             report.append("")
         
         # Advanced countermeasures and recommendations with clear explanations
-        report.append("## 🛡️ SECURITY COUNTERMEASURES & PROTECTION GUIDE")
+        report.append("## 🛡️ PRIVACY FOLLOW-UP GUIDE")
         report.append("")
         report.append("*Based on your analysis results, here are specific actions you can take to protect yourself.*")
         report.append("")
@@ -662,7 +660,7 @@ class SurveillanceDetector:
         if suspicious_devices:
             high_persistence = [d for d in suspicious_devices if d.persistence_score > 0.8]
             if high_persistence:
-                report.append("### 📊 HIGH-PERSISTENCE DEVICES DETECTED")
+                report.append("### 📊 HIGH HEURISTIC-PERSISTENCE IDENTIFIERS")
                 report.append("**ℹ️ Some devices showed high-frequency appearances - here are some general privacy tips:**")
                 report.append("")
                 report.append("#### 1. 📱 Consider Protecting Your Devices")
@@ -674,8 +672,8 @@ class SurveillanceDetector:
                 report.append("")
                 report.append("**When You Might Consider Disabling Wi-Fi:**")
                 report.append("- You could turn off Wi-Fi when walking around in public")
-                report.append("- You might use cellular data instead when you suspect someone is following")
-                report.append("- You could consider a Faraday bag (signal-blocking pouch) for your phone in high-risk situations")
+                report.append("- You might use cellular data instead when you want to reduce identifier exposure")
+                report.append("- You could consider a Faraday bag (signal-blocking pouch) for your phone in sensitive situations")
                 report.append("")
                 
                 report.append("#### 2. 🚶 Consider Changing Your Patterns")
@@ -685,24 +683,18 @@ class SurveillanceDetector:
                 report.append("- You could visit different stores/restaurants than usual")
                 report.append("- If possible, you might consider staying with friends/family temporarily")
                 report.append("")
-                report.append("**Why This Could Help:** Surveillance often relies on predictable patterns. By changing your routine, you could potentially make it harder for someone to track you.")
+                report.append("**Why This Could Help:** Repeated observation often relies on predictable patterns. By changing your routine, you could reduce pattern continuity.")
                 report.append("")
                 
                 report.append("#### 3. 📞 Consider Getting Help")
                 report.append("**You Might Consider Documenting Everything:**")
                 report.append("- You could save this report with timestamps")
-                report.append("- You might take photos of suspicious people or vehicles")
-                report.append("- You could keep a log of when/where you notice anything unusual")
-                report.append("")
-                report.append("**Contacting Authorities (Your Choice):**")
-                report.append("- **If you feel in immediate danger:** You could call 911")
-                report.append("- **For stalking/harassment:** You might contact local police non-emergency line")
-                report.append("- **For cybersecurity help:** You could consider consulting a security professional")
-                report.append("- **Legal protection:** You might research restraining orders if you know who's involved")
+                report.append("- You could keep a log of when/where you notice repeated observations")
+                report.append("- You might ask for technical support or report interpretation if you want another review")
                 report.append("")
         
         report.append("### 🔒 LONG-TERM PRIVACY PROTECTION")
-        report.append("*These steps help protect you from future surveillance attempts.*")
+        report.append("*These steps can help reduce future identifier exposure.*")
         report.append("")
         
         report.append("#### 📱 Consider Making Your Devices More Private")
@@ -717,25 +709,25 @@ class SurveillanceDetector:
         report.append("**Daily Habits You Might Consider:**")
         report.append("- You could vary your daily routes when possible")
         report.append("- You might be aware of people or cars you see repeatedly")
-        report.append("- You could trust your instincts - if something feels wrong, it might be")
-        report.append("- You might consider learning counter-surveillance techniques")
+        report.append("- You could trust your instincts if a situation feels off")
+        report.append("- You might consider learning general privacy-preserving practices")
         report.append("")
         
         report.append("#### 🔍 Consider Continued Monitoring")
         report.append("**Using This Tool:**")
-        report.append("- You could run CYT analysis regularly if you're concerned about surveillance")
+        report.append("- You could run CYT analysis regularly if you want to review repeated-observation patterns")
         report.append("- You might pay attention to devices that appear in multiple locations")
-        report.append("- You could share reports with law enforcement if patterns emerge")
+        report.append("- You could share reports with a technical support contact if patterns emerge")
         report.append("- You might keep logs of any suspicious activity")
         report.append("")
         
         report.append("#### ℹ️ Understanding the Technology")
-        report.append("**How Surveillance Tracking Works:**")
+        report.append("**How Identifier Reuse Works:**")
         report.append("- Devices broadcast unique identifiers (MAC addresses) when searching for Wi-Fi networks")
         report.append("- **Modern phones (iOS 14+, Android 10+) randomize these addresses** to protect privacy")
         report.append("- **Older devices or those with randomization disabled** still reveal their true MAC address")
-        report.append("- Surveillance equipment could record these identifiers to track device movements")
-        report.append("- This tool detects patterns where the same identifiers appear repeatedly or across locations")
+        report.append("- Observers or logging systems could record these identifiers to track device movements")
+        report.append("- This tool reviews patterns where the same identifiers appear repeatedly or across location labels")
         report.append("- **Note:** Randomized MAC addresses make tracking much harder but don't eliminate all risks")
         report.append("")
         
@@ -749,22 +741,19 @@ class SurveillanceDetector:
         report.append(f"Minimum Persistence Score: {self.thresholds['min_persistence_score']}")
         report.append("```")
         report.append("")
-        
-        report.append("### Statistical Confidence Levels")
+        report.append("### Heuristic Review Notes")
         report.append(f"- Analysis based on **{len(self.appearances):,} data points**")
-        report.append(f"- Confidence interval: **95%**")
-        report.append(f"- False positive rate: **< 5%**")
-        report.append(f"- Detection accuracy: **{stats['detection_accuracy']:.1%}**")
+        report.append(f"- Heuristic review score is derived from repeated observations, time span, and location-label spread")
         report.append("")
         
         # Footer
         report.append("---")
         report.append("")
-        report.append("*This report was generated by the CYT Advanced Surveillance Detection System.*")
-        report.append("*For technical support or threat intelligence inquiries, contact your security administrator.*")
+        report.append("*This report was generated by the CYT Heuristic Observation Review System.*")
+        report.append("*For technical support or report interpretation, contact your security administrator.*")
         report.append("")
         report.append(f"**Report ID:** CYT-{datetime.now().strftime('%Y%m%d%H%M%S')}")
-        report.append(f"**Classification:** CONFIDENTIAL - Personal Security Intelligence")
+        report.append(f"**Classification:** CONFIDENTIAL - Personal Privacy Review")
         
         report_text = '\n'.join(report)
         
@@ -772,7 +761,7 @@ class SurveillanceDetector:
         with open(output_file, 'w') as f:
             f.write(report_text)
         
-        logger.info(f"Advanced surveillance report saved to: {output_file}")
+        logger.info(f"Heuristic review report saved to: {output_file}")
         
         # Generate HTML version using pandoc
         html_file = output_file.replace('.md', '.html')

@@ -1,6 +1,6 @@
 # Chasing Your Tail (CYT)
 
-A comprehensive Wi-Fi probe request analyzer that monitors and tracks wireless devices by analyzing their probe requests. The system integrates with Kismet for packet capture and WiGLE API for SSID geolocation analysis, featuring advanced surveillance detection capabilities.
+A comprehensive Wi-Fi probe request analyzer that monitors and tracks wireless devices by analyzing their probe requests. The system integrates with Kismet for packet capture and WiGLE API for SSID geolocation analysis, featuring heuristic persistence review and KML export.
 
 ## 🚨 Security Notice
 
@@ -15,15 +15,15 @@ This project has been security-hardened to eliminate critical vulnerabilities:
 ## Features
 
 - **Real-time Wi-Fi monitoring** with Kismet integration
-- **Advanced surveillance detection** with persistence scoring
+- **Heuristic persistence review** with repeated-observation scoring
 - **🆕 Automatic GPS integration** - extracts coordinates from Bluetooth GPS via Kismet
 - **GPS correlation** and location clustering (100m threshold)
 - **Spectacular KML visualization** for Google Earth with professional styling and interactive content
 - **Multi-format reporting** - Markdown, HTML (with pandoc), and KML outputs
 - **Time-window tracking** (5, 10, 15, 20 minute windows)
 - **WiGLE API integration** for SSID geolocation
-- **Multi-location tracking algorithms** for detecting following behavior
-- **Enhanced GUI interface** with surveillance analysis button
+- **Multi-location review algorithms** for repeated-observation patterns
+- **Enhanced GUI interface** with heuristic review button
 - **Organized file structure** with dedicated output directories
 - **Comprehensive logging** and analysis tools
 
@@ -105,8 +105,11 @@ python3 surveillance_analyzer.py --demo
 # Analyze specific Kismet database
 python3 surveillance_analyzer.py --kismet-db /path/to/kismet.db
 
-# Focus on stalking detection with high persistence threshold
-python3 surveillance_analyzer.py --stalking-only --min-persistence 0.8
+# Preferred repeated-observation review
+python3 surveillance_analyzer.py --multi-location-only --min-threat 0.8
+
+# Deprecated compatibility alias for the same review flow
+python3 surveillance_analyzer.py --stalking-only --min-threat 0.8
 
 # Export results to JSON for further analysis
 python3 surveillance_analyzer.py --output-json analysis_results.json
@@ -122,13 +125,22 @@ python3 legacy/create_ignore_list.py  # Moved to legacy folder
 ```
 **Note**: Ignore lists are now stored as JSON files in `./ignore_lists/`
 
+## Interpretation Limits
+
+- Aggregated source rows may not represent distinct sightings.
+- MAC randomization may split one physical device across multiple identifiers.
+- Shared devices and static devices can both create repeated observations.
+- Location labels are analysis labels, not proof of precise device position.
+- The output does not establish identity, movement, following, stalking, surveillance, or intent.
+- Deprecated compatibility alias `--stalking-only` is retained for existing workflows.
+
 ## Core Components
 
 - **chasing_your_tail.py**: Core monitoring engine with real-time Kismet database queries
-- **cyt_gui.py**: Enhanced Tkinter GUI with surveillance analysis capabilities
-- **surveillance_analyzer.py**: GPS surveillance detection with automatic coordinate extraction and advanced KML visualization
-- **surveillance_detector.py**: Core persistence detection engine for suspicious device patterns
-- **gps_tracker.py**: GPS tracking with location clustering and spectacular Google Earth KML generation
+- **cyt_gui.py**: Enhanced Tkinter GUI with heuristic review capabilities
+- **surveillance_analyzer.py**: GPS-linked repeated-observation review with automatic coordinate extraction and KML visualization
+- **surveillance_detector.py**: Core persistence review engine for repeated device patterns
+- **gps_tracker.py**: GPS tracking with location clustering and Google Earth KML generation
 - **probe_analyzer.py**: Post-processing tool with WiGLE integration
 - **start_kismet_clean.sh**: ONLY working Kismet startup script (July 23, 2025 fix)
 
@@ -169,26 +181,26 @@ Maintains four overlapping time windows to detect device persistence:
 - Oldest: 15-20 minutes ago
 
 ### Surveillance Detection
-Advanced persistence detection algorithms analyze device behavior patterns:
+Advanced persistence review algorithms analyze device behavior patterns:
 - **Temporal Persistence**: Consistent device appearances over time
-- **Location Correlation**: Devices following across multiple locations
-- **Probe Pattern Analysis**: Suspicious SSID probe requests
+- **Location Correlation**: Repeated observations across multiple locations
+- **Probe Pattern Analysis**: SSID probe requests reviewed as heuristic signals
 - **Timing Analysis**: Unusual appearance patterns
 - **Persistence Scoring**: Weighted scores (0-1.0) based on combined indicators
-- **Multi-location Tracking**: Specialized algorithms for detecting following behavior
+- **Multi-location Tracking**: Specialized algorithms for repeated-observation review across locations
 
 ### GPS Integration & Spectacular KML Visualization (Enhanced!)
 - **🆕 Automatic GPS extraction** from Kismet database (Bluetooth GPS support)
 - **Location clustering** with 100m threshold for grouping nearby coordinates
 - **Session management** with timeout handling for location transitions
 - **Device-to-location correlation** links Wi-Fi devices to GPS positions
-- **Professional KML generation** with spectacular Google Earth visualizations featuring:
+- **Professional KML generation** with Google Earth visualizations featuring:
   - Color-coded persistence level markers (green/yellow/red)
-  - Device tracking paths showing movement correlation
-  - Rich interactive balloon content with detailed device intelligence
-  - Activity heatmaps and surveillance intensity zones
-  - Temporal analysis overlays for time-based pattern detection
-- **Multi-location tracking** detects devices following across locations with visual tracking paths
+  - Observation paths across location labels
+  - Rich interactive balloon content with device summaries
+  - Activity heatmaps and location-label zones
+  - Temporal analysis overlays for time-based pattern review
+- **Multi-location tracking** highlights repeated observations across locations with visual observation paths
 
 ## Configuration
 

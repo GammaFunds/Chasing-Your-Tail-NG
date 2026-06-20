@@ -16,17 +16,28 @@ from surveillance_detector import SurveillanceDetector, load_appearances_from_ki
 from gps_tracker import GPSTracker, KMLExporter, simulate_gps_data
 from secure_credentials import secure_config_loader
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('surveillance_analysis.log'),
-        logging.StreamHandler()
-    ]
-)
-
 logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging() -> None:
+    """Configure CLI logging only when the tool is executed directly."""
+    log_path = os.path.abspath('surveillance_analysis.log')
+    root_logger = logging.getLogger()
+
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.FileHandler) and os.path.abspath(handler.baseFilename) == log_path:
+            return
+
+    root_logger.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    file_handler = logging.FileHandler('surveillance_analysis.log')
+    file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(stream_handler)
 
 class SurveillanceAnalyzer:
     """Main surveillance analysis orchestrator"""
@@ -184,12 +195,12 @@ class SurveillanceAnalyzer:
         print(f"✅ Total device appearances loaded: {total_count:,}")
         
         # Perform surveillance detection
-        print("\\n🚨 Analyzing for surveillance patterns...")
+        print("\\n🔍 Analyzing repeated-observation patterns...")
         suspicious_devices = self.detector.analyze_surveillance_patterns()
         
         if suspicious_devices:
-            print(f"⚠️ Found {len(suspicious_devices)} potentially suspicious devices!")
-            print("\\nTop suspicious devices:")
+            print(f"⚠️ {len(suspicious_devices)} identifiers met the heuristic review threshold.")
+            print("\\nTop review candidates:")
             for i, device in enumerate(suspicious_devices[:5], 1):
                 print(f"  {i}. {device.mac} (Score: {device.persistence_score:.2f})")
                 print(f"     Appearances: {device.total_appearances}, Locations: {len(device.locations_seen)}")
@@ -197,7 +208,7 @@ class SurveillanceAnalyzer:
                     print(f"     • {reason}")
                 print()
         else:
-            print("✅ No suspicious surveillance patterns detected")
+            print("✅ No identifiers met the heuristic review threshold")
         
         # Generate reports
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -205,7 +216,7 @@ class SurveillanceAnalyzer:
         # Generate surveillance report
         report_file = f"surveillance_reports/surveillance_report_{timestamp}.md"
         html_file = f"surveillance_reports/surveillance_report_{timestamp}.html"
-        print(f"\\n📝 Generating surveillance reports:")
+        print(f"\\n📝 Generating heuristic review reports:")
         print(f"   📄 Markdown: {report_file}")
         print(f"   🌐 HTML: {html_file}")
         surveillance_report = self.detector.generate_surveillance_report(report_file)
@@ -237,7 +248,7 @@ class SurveillanceAnalyzer:
     
     def generate_demo_analysis(self) -> dict:
         """Generate analysis using simulated GPS data for demo purposes"""
-        print("🎯 Generating BlackHat Arsenal Demo Analysis...")
+        print("🎯 Generating heuristic review demo analysis...")
         print("Using simulated GPS route with real Kismet data")
         
         # Use simulated GPS route
@@ -250,8 +261,8 @@ class SurveillanceAnalyzer:
         print("=" * 50)
         print(f"📊 Analysis Results:")
         print(f"   Total Devices: {results['total_devices']:,}")
-        print(f"   Suspicious Devices: {results['suspicious_devices']}")
-        print(f"   High Threat: {results['high_threat_devices']}")
+        print(f"   Identifiers Meeting Review Threshold: {results['suspicious_devices']}")
+        print(f"   High Review: {results['high_threat_devices']}")
         print(f"   Multi-Location Devices: {results['multi_location_devices']}")
         print(f"   Location Sessions: {results['location_sessions']}")
         print(f"\\n📁 Generated Files:")
@@ -261,46 +272,53 @@ class SurveillanceAnalyzer:
         
         return results
     
-    def analyze_for_stalking(self, min_persistence_score: float = 0.7) -> list:
-        """Specifically analyze for stalking patterns"""
+    def analyze_multi_location_activity(self, min_review_score: float = 0.7) -> list:
+        """Analyze for repeated multi-location activity using the existing candidate algorithm"""
         suspicious_devices = self.detector.analyze_surveillance_patterns()
-        
-        # Filter for high-threat stalking indicators
-        stalking_candidates = []
+
+        # Filter for repeated multi-location review indicators
+        review_candidates = []
         for device in suspicious_devices:
-            if device.persistence_score >= min_persistence_score:
-                # Additional stalking-specific checks
+            if device.persistence_score >= min_review_score:
+                # Additional repeated-observation checks
                 locations = len(device.locations_seen)
                 appearances = device.total_appearances
-                
-                # Stalking indicators:
-                # - Appears at 3+ different locations
+
+                # Review indicators:
+                # - Appears at 3+ different location labels
                 # - High frequency of appearances
                 # - Spans multiple days
                 time_span = device.last_seen - device.first_seen
                 time_span_hours = time_span.total_seconds() / 3600
-                
-                stalking_score = 0
-                stalking_reasons = []
-                
+
+                review_score = 0
+                review_reasons = []
+
                 if locations >= 3:
-                    stalking_score += 0.4
-                    stalking_reasons.append(f"Follows across {locations} locations")
-                
+                    review_score += 0.4
+                    review_reasons.append(f"Observed across {locations} location labels")
+
                 if appearances >= 10:
-                    stalking_score += 0.3
-                    stalking_reasons.append(f"High frequency ({appearances} appearances)")
-                
+                    review_score += 0.3
+                    review_reasons.append(f"High frequency ({appearances} appearances)")
+
                 if time_span_hours >= 24:
-                    stalking_score += 0.3
-                    stalking_reasons.append(f"Persistent over {time_span_hours/24:.1f} days")
-                
-                if stalking_score >= 0.6:
-                    device.stalking_score = stalking_score
-                    device.stalking_reasons = stalking_reasons
-                    stalking_candidates.append(device)
-        
-        return stalking_candidates
+                    review_score += 0.3
+                    review_reasons.append(f"Persistent over {time_span_hours/24:.1f} days")
+
+                device.heuristic_review_score = review_score
+                device.activity_reasons = review_reasons
+                device.stalking_score = review_score
+                device.stalking_reasons = review_reasons
+
+                if review_score >= 0.6:
+                    review_candidates.append(device)
+
+        return review_candidates
+
+    def analyze_for_stalking(self, min_persistence_score: float = 0.7) -> list:
+        """Backward-compatible wrapper for multi-location activity review"""
+        return self.analyze_multi_location_activity(min_review_score=min_persistence_score)
     
     def export_results_json(self, results: dict, output_file: str) -> None:
         """Export analysis results to JSON for further processing"""
@@ -395,6 +413,7 @@ class SurveillanceAnalyzer:
 
 def main():
     """Main CLI interface"""
+    _configure_cli_logging()
     parser = argparse.ArgumentParser(description='CYT Surveillance Analysis Tool')
     parser.add_argument('--demo', action='store_true', 
                        help='Run demo analysis with simulated GPS data')
@@ -402,12 +421,14 @@ def main():
                        help='Path to specific Kismet database file')
     parser.add_argument('--gps-file', type=str,
                        help='JSON file with GPS coordinates')
+    parser.add_argument('--multi-location-only', action='store_true',
+                       help='Focus analysis on repeated multi-location activity')
     parser.add_argument('--stalking-only', action='store_true',
-                       help='Focus analysis on stalking detection')
+                       help='Deprecated alias for --multi-location-only')
     parser.add_argument('--output-json', type=str,
                        help='Export results to JSON file')
     parser.add_argument('--min-threat', type=float, default=0.5,
-                       help='Minimum threat score for reporting (default: 0.5)')
+                       help='Minimum heuristic review score for reporting (default: 0.5)')
     
     args = parser.parse_args()
     
@@ -428,23 +449,25 @@ def main():
                 gps_data=gps_data
             )
         
-        # Stalking-specific analysis
-        if args.stalking_only:
-            stalking_devices = analyzer.analyze_for_stalking(args.min_threat)
-            if stalking_devices:
-                print(f"\\n🚨 STALKING ALERT: {len(stalking_devices)} devices with stalking patterns!")
-                for device in stalking_devices:
-                    print(f"   ⚠️ {device.mac} (Stalking Score: {device.stalking_score:.2f})")
-                    for reason in device.stalking_reasons:
+        # Multi-location activity review
+        if args.multi_location_only or args.stalking_only:
+            review_devices = analyzer.analyze_multi_location_activity(args.min_threat)
+            print("\\nMulti-location activity review")
+            if review_devices:
+                for device in review_devices:
+                    score = getattr(device, "heuristic_review_score", getattr(device, "stalking_score", 0.0))
+                    reasons = getattr(device, "activity_reasons", getattr(device, "stalking_reasons", []))
+                    print(f"   {device.mac} (Heuristic review score: {score:.2f})")
+                    for reason in reasons:
                         print(f"      • {reason}")
             else:
-                print("\\n✅ No stalking patterns detected")
+                print("   No devices met the heuristic review threshold")
         
         # Export JSON if requested
         if args.output_json:
             analyzer.export_results_json(results, args.output_json)
         
-        print("\\n🔒 Analysis complete! Stay safe out there.")
+        print("\\n🔒 Analysis complete.")
         
     except Exception as e:
         logger.error(f"Analysis failed: {e}")

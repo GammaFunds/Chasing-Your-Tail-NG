@@ -1,6 +1,6 @@
 """
 GPS Integration for CYT
-Correlates device appearances with GPS locations for surveillance detection
+Correlates device appearances with GPS locations for heuristic persistence review
 """
 import json
 import time
@@ -190,14 +190,15 @@ class KMLExporter:
         self.kml_template = '''<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
 <Document>
-    <name>🛡️ CYT Advanced Surveillance Detection Analysis</name>
+    <name>🛡️ CYT Heuristic Observation Review Analysis</name>
     <description><![CDATA[
-        <h2>🔍 Chasing Your Tail - Surveillance Detection Report</h2>
+        <h2>🔍 Chasing Your Tail - Heuristic Observation Review</h2>
         <p><b>📊 Generated:</b> {timestamp}</p>
-        <p><b>🎯 Analysis:</b> Advanced wireless device tracking and persistence analysis</p>
-        <p><b>🛰️ GPS Data:</b> Real-time location correlation with device appearances</p>
+        <p><b>🎯 Analysis:</b> Wireless repeated-observation and persistence review</p>
+        <p><b>🛰️ GPS Data:</b> Location-label correlation with device appearances</p>
         <hr>
-        <p><i>This visualization shows device tracking patterns and location-based surveillance analysis.</i></p>
+        <p><i>This visualization shows observation paths and location-label review.</i></p>
+        <p><i>Location/session associations do not establish precise device position, movement, identity, following, or intent.</i></p>
     ]]></description>
     
     <!-- High Persistence Device Styles -->
@@ -293,7 +294,7 @@ class KMLExporter:
         </LabelStyle>
     </Style>
     
-    <!-- Device Tracking Path Styles -->
+    <!-- Device Observation Path Styles -->
     <Style id="criticalTrackingPath">
         <LineStyle>
             <color>ff0000ff</color>
@@ -353,7 +354,7 @@ class KMLExporter:
     
     def generate_kml(self, gps_tracker: GPSTracker, surveillance_devices: List = None,
                     output_file: str = "cyt_analysis.kml") -> str:
-        """Generate spectacular KML file with advanced surveillance visualization"""
+        """Generate spectacular KML file with advanced heuristic observation visualization"""
         
         if not gps_tracker.location_sessions:
             logger.warning("No GPS data available for KML generation")
@@ -362,10 +363,12 @@ class KMLExporter:
         content_parts = []
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
+        review_devices = surveillance_devices
+
         # Enhanced location sessions with threat level visualization  
         content_parts.append("<Folder>")
         content_parts.append("<name>📍 Monitoring Locations</name>")
-        content_parts.append("<description>Geographic locations where surveillance detection occurred</description>")
+        content_parts.append("<description>Geographic locations associated with repeated-observation review</description>")
         
         for session in gps_tracker.get_location_history():
             start_time = datetime.fromtimestamp(session.start_time)
@@ -375,8 +378,8 @@ class KMLExporter:
             # Calculate threat level for this location
             location_persistence_score = 0.0
             suspicious_devices_here = []
-            if surveillance_devices:
-                for device in surveillance_devices:
+            if review_devices:
+                for device in review_devices:
                     if session.session_id in device.locations_seen:
                         location_persistence_score = max(location_persistence_score, device.persistence_score)
                         suspicious_devices_here.append(device)
@@ -412,14 +415,14 @@ class KMLExporter:
             <tr><td><b>Monitoring End</b></td><td>{end_time.strftime('%Y-%m-%d %H:%M:%S')}</td></tr>
             <tr><td><b>Duration</b></td><td>{duration:.1f} minutes</td></tr>
             <tr><td><b>Total Devices</b></td><td>{len(session.devices_seen)}</td></tr>
-            <tr><td><b>Suspicious Devices</b></td><td>{len(suspicious_devices_here)}</td></tr>
+            <tr><td><b>Reviewed Identifiers</b></td><td>{len(suspicious_devices_here)}</td></tr>
             <tr><td><b>Coordinates</b></td><td>{session.location.latitude:.6f}, {session.location.longitude:.6f}</td></tr>
             </table>
             <br/>
-            <h4>📱 Device Intelligence Summary:</h4>
+            <h4>📱 Device Summary:</h4>
             {self._format_enhanced_device_list(session.devices_seen, suspicious_devices_here)}
             
-            {self._format_location_persistence_analysis(suspicious_devices_here) if suspicious_devices_here else '<p><b>✅ No persistent devices detected at this location</b></p>'}
+            {self._format_location_persistence_analysis(suspicious_devices_here) if suspicious_devices_here else '<p><b>✅ No persistent devices noted at this location</b></p>'}
             ]]>
         </description>
         <styleUrl>{style_url}</styleUrl>
@@ -436,12 +439,12 @@ class KMLExporter:
         content_parts.append("</Folder>")
         
         # Advanced suspicious device tracking with threat classification
-        if surveillance_devices:
+        if review_devices:
             # Group devices by threat level
-            critical_devices = [d for d in surveillance_devices if d.persistence_score > 0.9]
-            high_devices = [d for d in surveillance_devices if 0.8 <= d.persistence_score <= 0.9]
-            medium_devices = [d for d in surveillance_devices if 0.6 <= d.persistence_score < 0.8]
-            low_devices = [d for d in surveillance_devices if d.persistence_score < 0.6]
+            critical_devices = [d for d in review_devices if d.persistence_score > 0.9]
+            high_devices = [d for d in review_devices if 0.8 <= d.persistence_score <= 0.9]
+            medium_devices = [d for d in review_devices if 0.6 <= d.persistence_score < 0.8]
+            low_devices = [d for d in review_devices if d.persistence_score < 0.6]
             
             # Very high persistence devices folder
             if critical_devices:
@@ -467,16 +470,16 @@ class KMLExporter:
                 self._add_device_tracking_folder(content_parts, medium_devices, gps_tracker, "MEDIUM")
                 content_parts.append("</Folder>")
             
-            # Surveillance pattern analysis overlay
+            # Observation pattern analysis overlay
             content_parts.append("<Folder>")
             content_parts.append("<name>🔍 BEHAVIORAL ANALYSIS</name>")
-            content_parts.append("<description>Advanced surveillance pattern visualization</description>")
+            content_parts.append("<description>Advanced repeated-observation pattern visualization</description>")
             
             # Add heat map style analysis
-            self._add_surveillance_heatmap(content_parts, surveillance_devices, gps_tracker)
+            self._add_activity_heatmap(content_parts, review_devices, gps_tracker)
             
             # Add temporal analysis tracks
-            self._add_temporal_analysis_tracks(content_parts, surveillance_devices, gps_tracker)
+            self._add_temporal_analysis_tracks(content_parts, review_devices, gps_tracker)
             
             content_parts.append("</Folder>")
         
@@ -487,7 +490,7 @@ class KMLExporter:
             content=full_content,
             timestamp=timestamp,
             total_locations=len(gps_tracker.location_sessions),
-            total_devices=len(surveillance_devices) if surveillance_devices else 0
+            total_devices=len(review_devices) if review_devices else 0
         )
         
         # Save to file
@@ -495,7 +498,7 @@ class KMLExporter:
             f.write(kml_output)
         
         logger.info(f"🎯 SPECTACULAR KML visualization generated: {output_file}")
-        logger.info(f"📊 Includes {len(gps_tracker.location_sessions)} locations, {len(surveillance_devices) if surveillance_devices else 0} surveillance devices")
+        logger.info(f"📊 Includes {len(gps_tracker.location_sessions)} locations, {len(review_devices) if review_devices else 0} reviewed devices")
         return kml_output
     
     def _format_device_list(self, devices: List[str]) -> str:
@@ -513,21 +516,21 @@ class KMLExporter:
         return formatted
     
     def _format_threat_reasons(self, reasons: List[str]) -> str:
-        """Format threat reasons for KML description"""
+        """Format review reasons for KML description"""
         if not reasons:
-            return "No specific threats identified"
+            return "No specific review reasons"
         
         return "<br/>".join(f"• {reason}" for reason in reasons)
     
     def _format_enhanced_device_list(self, all_devices: List[str], suspicious_devices: List) -> str:
-        """Format enhanced device list with threat intelligence"""
+        """Format enhanced device list with review details"""
         if not all_devices:
             return "<p>No devices detected</p>"
         
         html = "<ul>"
         suspicious_macs = {device.mac for device in suspicious_devices}
         
-        # Show suspicious devices first
+        # Show reviewed identifiers first
         for device in suspicious_devices:
             persistence_emoji = "🚨" if device.persistence_score > 0.8 else "⚠️" if device.persistence_score > 0.6 else "🟡"
             html += f"<li><b>{persistence_emoji} {device.mac}</b> - Persistence Score: {device.persistence_score:.2f}</li>"
@@ -535,10 +538,10 @@ class KMLExporter:
         # Show remaining devices
         normal_devices = [mac for mac in all_devices if mac not in suspicious_macs]
         for mac in normal_devices[:10]:  # Limit to avoid clutter
-            html += f"<li>✅ {mac} - Normal</li>"
+            html += f"<li>✅ {mac} - Did not meet review threshold</li>"
         
         if len(normal_devices) > 10:
-            html += f"<li><i>... and {len(normal_devices) - 10} more normal devices</i></li>"
+            html += f"<li><i>... and {len(normal_devices) - 10} more non-flagged devices</i></li>"
             
         html += "</ul>"
         return html
@@ -585,7 +588,7 @@ class KMLExporter:
             if device.mac in multi_location_devices:
                 locations = multi_location_devices[device.mac]
                 
-                # Create enhanced tracking path with temporal data
+                # Create enhanced observation path with temporal data
                 path_coordinates = []
                 location_times = []
                 
@@ -595,20 +598,20 @@ class KMLExporter:
                         location_times.append(datetime.fromtimestamp(session.start_time))
                 
                 if len(path_coordinates) > 1:
-                    # Device tracking path
+                    # Device observation path
                     duration = device.last_seen - device.first_seen
                     device_path = f'''
     <Placemark>
-        <name>[{threat_level}] Tracking Path: {device.mac}</name>
+        <name>[{threat_level}] Observation Path: {device.mac}</name>
         <description>
             <![CDATA[
-            <h3>🎯 DEVICE TRACKING INTELLIGENCE</h3>
+            <h3>🎯 DEVICE OBSERVATION DETAILS</h3>
             <table border="1" cellpadding="5">
             <tr><td><b>MAC Address</b></td><td>{device.mac}</td></tr>
             <tr><td><b>Persistence Classification</b></td><td>{threat_level} PERSISTENCE</td></tr>
             <tr><td><b>Persistence Score</b></td><td>{device.persistence_score:.3f}/1.000</td></tr>
-            <tr><td><b>Surveillance Duration</b></td><td>{duration.total_seconds()/3600:.1f} hours</td></tr>
-            <tr><td><b>Locations Tracked</b></td><td>{len(locations)}</td></tr>
+            <tr><td><b>Observation Span</b></td><td>{duration.total_seconds()/3600:.1f} hours</td></tr>
+            <tr><td><b>Location Labels Observed</b></td><td>{len(locations)}</td></tr>
             <tr><td><b>Total Appearances</b></td><td>{device.total_appearances}</td></tr>
             <tr><td><b>First Seen</b></td><td>{device.first_seen.strftime('%Y-%m-%d %H:%M:%S')}</td></tr>
             <tr><td><b>Last Seen</b></td><td>{device.last_seen.strftime('%Y-%m-%d %H:%M:%S')}</td></tr>
@@ -618,7 +621,7 @@ class KMLExporter:
             <ul>
             {chr(10).join(f'<li>{reason}</li>' for reason in device.reasons)}
             </ul>
-            <h4>📍 Location Tracking Path:</h4>
+            <h4>📍 Observation Path Labels:</h4>
             <ol>
             {chr(10).join(f'<li>{time.strftime("%H:%M")} - {loc}</li>' for time, loc in zip(location_times, locations))}
             </ol>
@@ -644,12 +647,12 @@ class KMLExporter:
         <name>[{threat_level}] {device.mac} @ {session.session_id}</name>
         <description>
             <![CDATA[
-            <h3>📱 DEVICE DETECTION EVENT</h3>
+            <h3>📱 DEVICE OBSERVATION EVENT</h3>
             <table border="1" cellpadding="5">
             <tr><td><b>Device MAC</b></td><td>{device.mac}</td></tr>
             <tr><td><b>Location</b></td><td>{session.session_id}</td></tr>
             <tr><td><b>Persistence Level</b></td><td>{threat_level}</td></tr>
-            <tr><td><b>Detection Time</b></td><td>{datetime.fromtimestamp(session.start_time).strftime('%Y-%m-%d %H:%M:%S')}</td></tr>
+            <tr><td><b>Observation Time</b></td><td>{datetime.fromtimestamp(session.start_time).strftime('%Y-%m-%d %H:%M:%S')}</td></tr>
             <tr><td><b>Duration at Location</b></td><td>{(session.end_time - session.start_time)/60:.1f} minutes</td></tr>
             <tr><td><b>Appearances Here</b></td><td>{len(appearances_here)}</td></tr>
             <tr><td><b>Persistence Score</b></td><td>{device.persistence_score:.3f}</td></tr>
@@ -664,13 +667,13 @@ class KMLExporter:
     </Placemark>'''
                         content_parts.append(device_marker)
     
-    def _add_surveillance_heatmap(self, content_parts: List[str], surveillance_devices: List, 
+    def _add_activity_heatmap(self, content_parts: List[str], review_devices: List,
                                 gps_tracker: GPSTracker) -> None:
-        """Add surveillance intensity heatmap visualization"""
+        """Add repeated-observation intensity heatmap visualization"""
         
-        # Calculate surveillance intensity per location
+        # Calculate repeated-observation intensity per location
         location_intensity = {}
-        for device in surveillance_devices:
+        for device in review_devices:
             for location in device.locations_seen:
                 if location not in location_intensity:
                     location_intensity[location] = []
@@ -694,13 +697,13 @@ class KMLExporter:
                 
                 heatmap_circle = f'''
     <Placemark>
-        <name>🔥 Surveillance Intensity: {location}</name>
+        <name>🔥 Observation Intensity: {location}</name>
         <description>
             <![CDATA[
-            <h3>📊 SURVEILLANCE INTENSITY ANALYSIS</h3>
+            <h3>📊 OBSERVATION INTENSITY ANALYSIS</h3>
             <table border="1" cellpadding="5">
             <tr><td><b>Location</b></td><td>{location}</td></tr>
-            <tr><td><b>Suspicious Devices</b></td><td>{device_count}</td></tr>
+            <tr><td><b>Reviewed Identifiers</b></td><td>{device_count}</td></tr>
             <tr><td><b>Average Persistence Score</b></td><td>{avg_persistence:.3f}</td></tr>
             <tr><td><b>Maximum Persistence Score</b></td><td>{max_persistence:.3f}</td></tr>
             <tr><td><b>Intensity Level</b></td><td>{'🔴 VERY HIGH' if max_persistence > 0.8 else '🟡 ELEVATED' if max_persistence > 0.6 else '🟢 MODERATE'}</td></tr>
@@ -720,16 +723,16 @@ class KMLExporter:
     </Placemark>'''
                 content_parts.append(heatmap_circle)
     
-    def _add_temporal_analysis_tracks(self, content_parts: List[str], surveillance_devices: List,
+    def _add_temporal_analysis_tracks(self, content_parts: List[str], review_devices: List,
                                     gps_tracker: GPSTracker) -> None:
-        """Add temporal surveillance pattern visualization"""  
+        """Add temporal repeated-observation pattern visualization"""
         
         # Group devices by time patterns
         work_hour_devices = []
         off_hour_devices = []
         regular_pattern_devices = []
         
-        for device in surveillance_devices:
+        for device in review_devices:
             hours = [datetime.fromtimestamp(a.timestamp).hour for a in device.appearances]
             work_hours = [h for h in hours if 9 <= h <= 17]
             off_hours = [h for h in hours if h >= 22 or h <= 6]
@@ -756,12 +759,12 @@ class KMLExporter:
         if work_hour_devices:
             analysis = f'''
     <Placemark>
-        <name>⏰ Work Hours Surveillance Pattern</name>
+        <name>⏰ Work Hours Observation Pattern</name>
         <description>
             <![CDATA[
-            <h3>👔 WORK HOURS SURVEILLANCE DETECTED</h3>
+            <h3>👔 WORK HOURS OBSERVATION NOTED</h3>
             <p><b>{len(work_hour_devices)} devices</b> show activity primarily during work hours (9 AM - 5 PM)</p>
-            <p><b>Implications:</b> Possible workplace surveillance or professional monitoring</p>
+            <p><b>Implications:</b> Could reflect work routines or shared infrastructure</p>
             <h4>Affected Devices:</h4>
             <ul>
             {chr(10).join(f'<li>{device.mac} (Score: {device.persistence_score:.2f})</li>' for device in work_hour_devices)}
@@ -778,12 +781,12 @@ class KMLExporter:
         if off_hour_devices:
             analysis = f'''
     <Placemark>
-        <name>🌙 Off-Hours Surveillance Pattern</name>
+        <name>🌙 Off-Hours Observation Pattern</name>
         <description>
             <![CDATA[
-            <h3>🚨 OFF-HOURS SURVEILLANCE DETECTED</h3>
+            <h3>🚨 OFF-HOURS OBSERVATION NOTED</h3>
             <p><b>{len(off_hour_devices)} devices</b> show activity primarily during off hours (10 PM - 6 AM)</p>
-            <p><b>Implications:</b> Possible stalking or personal surveillance</p>
+            <p><b>Implications:</b> Could reflect delayed batch activity or shared/static devices</p>
             <h4>Affected Devices:</h4>
             <ul>
             {chr(10).join(f'<li>{device.mac} (Score: {device.persistence_score:.2f})</li>' for device in off_hour_devices)}
@@ -818,7 +821,7 @@ class KMLExporter:
         return '''<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
 <Document>
-    <name>🛡️ CYT Advanced Surveillance Detection Analysis</name>
+    <name>🛡️ CYT Heuristic Observation Review Analysis</name>
     <description><![CDATA[
         <h2>📡 CYT Device Analysis Report</h2>
         <p><b>Generated:</b> {timestamp}</p>
@@ -830,11 +833,12 @@ class KMLExporter:
         <ul>
         <li>Color-coded device classifications</li>
         <li>Location monitoring session data</li>
-        <li>Device movement correlation</li>
+        <li>Observation path correlation</li>
         <li>Activity intensity mapping</li>
         <li>Time-based pattern analysis</li>
         </ul>
         <p><i>KML visualization for Google Earth analysis.</i></p>
+        <p><i>Location/session associations do not establish precise device position, movement, identity, following, or intent.</i></p>
     ]]></description>
     
     <!-- Location Styles -->

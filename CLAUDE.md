@@ -4,16 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Chasing Your Tail (CYT) is a Wi-Fi probe request analyzer that monitors and tracks wireless devices by analyzing their probe requests. The system integrates with Kismet for packet capture and WiGLE API for SSID geolocation analysis.
+Chasing Your Tail (CYT) is a Wi-Fi probe request analyzer that monitors and tracks wireless devices by analyzing their probe requests. The system integrates with Kismet for packet capture and WiGLE API for SSID geolocation analysis, with heuristic persistence review for repeated observations and location-label review.
 
 ## Core Architecture
 
 ### Main Components
 - **chasing_your_tail.py**: Core monitoring engine that queries Kismet SQLite databases in real-time
-- **cyt_gui.py**: Enhanced Tkinter GUI interface for controlling the system with surveillance analysis
-- **surveillance_analyzer.py**: Main surveillance detection orchestrator with GPS correlation and advanced KML visualization
-- **surveillance_detector.py**: Core persistence detection engine for identifying suspicious device patterns
-- **gps_tracker.py**: GPS tracking integration with location clustering and spectacular Google Earth KML generation
+- **cyt_gui.py**: Enhanced Tkinter GUI interface for controlling the system with heuristic review
+- **surveillance_analyzer.py**: Main repeated-observation review orchestrator with GPS correlation and KML visualization
+- **surveillance_detector.py**: Core persistence review engine for repeated device patterns
+- **gps_tracker.py**: GPS tracking integration with location clustering and Google Earth KML generation
 - **probe_analyzer.py**: Post-processing tool for analyzing collected probe data with WiGLE integration
 - **start_kismet_clean.sh**: ONLY working Kismet startup script (all others moved to old_scripts/)
 - **Security modules**: `secure_*.py` files providing SQL injection prevention and encrypted credentials
@@ -109,7 +109,7 @@ python3 surveillance_analyzer.py --demo
 # Analyze specific Kismet database for surveillance patterns
 python3 surveillance_analyzer.py --kismet-db /path/to/kismet.db
 
-# Focus on stalking detection only with persistence scoring
+# Prefer repeated-observation review only with persistence scoring
 python3 surveillance_analyzer.py --stalking-only --min-persistence 0.8
 
 # Export results to JSON for further analysis
@@ -117,28 +117,34 @@ python3 surveillance_analyzer.py --output-json analysis_results.json
 
 # Analyze with external GPS data from JSON file
 python3 surveillance_analyzer.py --gps-file gps_coordinates.json
+
+# Preferred repeated-observation review
+python3 surveillance_analyzer.py --multi-location-only
+
+# Deprecated compatibility alias for the same review flow
+python3 surveillance_analyzer.py --stalking-only
 ```
 
 ### GUI Features
 The enhanced GUI (`cyt_gui.py`) now includes:
-- **🗺️ Surveillance Analysis** button - Runs GPS-correlated persistence detection with advanced KML visualization
+- **🗺️ Heuristic Review** button - Runs GPS-correlated repeated-observation review with KML visualization
 - **📈 Analyze Logs** button - Analyzes historical probe request data
 - **Real-time GPS integration** - Automatically uses Bluetooth GPS data from Kismet
 - **Spectacular KML generation** - Creates professional Google Earth visualizations with threat-level styling
 
 ### GPS Integration & KML Visualization (ENHANCED!)
-The system now automatically extracts GPS coordinates from Kismet databases and creates spectacular visualizations:
+The system now automatically extracts GPS coordinates from Kismet databases and creates visualizations:
 
 - **Automatic GPS Detection**: No manual GPS file needed - extracts coordinates from Kismet
 - **Real-time Correlation**: Links device appearances to GPS locations with precise timing
 - **Location Clustering**: Groups nearby GPS points (within 100m) for analysis
-- **Professional KML Generation**: Creates spectacular Google Earth visualizations with:
+- **Professional KML Generation**: Creates Google Earth visualizations with:
   - Color-coded persistence level markers (green/yellow/red)
-  - Device tracking paths showing movement correlation
-  - Rich balloon content with detailed device intelligence
+  - Observation paths across location labels
+  - Rich balloon content with device summaries
   - Activity heatmaps and intensity zones
-  - Temporal analysis with time-based pattern detection
-- **Multi-location Tracking**: Detects devices following across different locations with visual tracking paths
+  - Temporal analysis with time-based pattern review
+- **Multi-location Tracking**: Highlights repeated observations across different locations with visual observation paths
 
 ### Ignore List Management
 ```bash
@@ -198,26 +204,35 @@ System reads from live Kismet SQLite databases using direct SQL queries. Key tab
 Probe analyzer can query WiGLE API for SSID location data using securely encrypted API credentials.
 
 ### Surveillance Detection System
-Advanced persistence detection algorithms analyze device behavior patterns:
+Advanced persistence review algorithms analyze device behavior patterns:
 - **Temporal Persistence**: Detects devices appearing consistently over time
-- **Location Correlation**: Identifies devices following across multiple locations  
-- **Probe Pattern Analysis**: Analyzes SSID probe requests for suspicious patterns
+- **Location Correlation**: Identifies repeated observations across multiple locations
+- **Probe Pattern Analysis**: Analyzes SSID probe requests as heuristic signals
 - **Timing Analysis**: Detects unusual appearance timing (work hours, off-hours, regular intervals)
 - **Persistence Scoring**: Assigns weighted scores (0-1.0) based on combined indicators
-- **Multi-location Tracking**: Specialized algorithms for detecting following behavior across locations
+- **Multi-location Tracking**: Specialized algorithms for repeated-observation review across locations
 
 ### GPS Integration & Spectacular KML Export
 - **Location Clustering**: Groups nearby GPS coordinates (configurable threshold)
 - **Session Management**: Tracks location sessions with timeout handling
 - **Device Correlation**: Links device appearances to specific GPS locations
-- **Professional KML Generation**: Creates spectacular Google Earth files with:
+- **Professional KML Generation**: Creates Google Earth files with:
   - Color-coded location markers with persistence-level styling
-  - Device tracking paths with threat-level visualization
-  - Rich interactive balloon content with device intelligence
-  - Activity heatmaps showing surveillance intensity zones
-  - Temporal analysis overlays for time-based pattern detection
+  - Observation paths with repeated-observation review
+  - Rich interactive balloon content with device summaries
+  - Activity heatmaps showing activity intensity zones
+  - Temporal analysis overlays for time-based pattern review
   - Professional document metadata and feature descriptions
-- **Multi-location Analysis**: Identifies devices seen across multiple locations with visual tracking paths
+- **Multi-location Analysis**: Identifies devices seen across multiple locations with visual observation paths
+
+## Interpretation Limits
+
+- Aggregated source rows may not represent distinct sightings
+- MAC randomization may split one physical device across multiple identifiers
+- Shared devices and static devices can both create repeated observations
+- Location labels are analysis labels, not proof of precise device position
+- The output does not establish identity, movement, following, stalking, surveillance, or intent
+- Deprecated compatibility alias `--stalking-only` is retained for existing workflows.
 
 ## Security Hardening (NEW!)
 

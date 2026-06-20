@@ -1,10 +1,10 @@
 # CYT - BlackHat Arsenal 2025
 
-## Chasing Your Tail: Advanced Wi-Fi Surveillance Detection
+## Chasing Your Tail: Heuristic Observation Review
 
 ### 🎯 BlackHat Arsenal Presentation Summary
 
-**Tool Category**: Wireless Security / Surveillance Detection  
+**Tool Category**: Wireless Security / Heuristic Review
 **Language**: Python 3  
 **Platform**: Linux  
 **License**: MIT  
@@ -15,13 +15,13 @@
 - Professional KML generation with advanced styling
 - Color-coded persistence level markers (green/yellow/red)
 - Device tracking paths showing movement correlation
-- Rich interactive balloon content with device intelligence
-- Activity heatmaps and surveillance intensity zones
+- Rich interactive balloon content with device summaries
+- Activity heatmaps and location-label zones
 
-#### 2. **Advanced Surveillance Detection**
-- Multi-location device tracking algorithms
-- Persistence scoring (0.0-1.0) for threat assessment
-- Temporal analysis with time-based pattern detection
+#### 2. **Advanced Heuristic Review**
+- Multi-location review algorithms
+- Persistence scoring (0.0-1.0) for repeated-observation analysis
+- Temporal analysis with time-based pattern review
 - GPS correlation with automatic coordinate extraction
 - Real-time Kismet database integration
 
@@ -42,7 +42,7 @@
 
 1. **Security Verification** - Show hardened architecture
 2. **GUI Demonstration** - Enhanced Tkinter interface
-3. **Analysis Execution** - Real surveillance detection
+3. **Analysis Execution** - Real heuristic review
 4. **Google Earth Visualization** - Spectacular KML display
 5. **Multi-location Tracking** - Device following demonstration
 
@@ -51,7 +51,7 @@
 #### Core Files
 - `surveillance_analyzer.py` - Main analysis engine
 - `gps_tracker.py` - GPS integration & KML generation  
-- `surveillance_detector.py` - Persistence detection algorithms
+- `surveillance_detector.py` - Persistence review algorithms
 - `cyt_gui.py` - Enhanced GUI interface
 - `chasing_your_tail.py` - Real-time monitoring engine
 
@@ -74,17 +74,25 @@
 
 ### 🛡️ Use Cases Demonstrated
 
-1. **Personal Safety** - Detecting stalking/following behavior
-2. **Corporate Security** - Identifying surveillance devices
+1. **Personal Privacy** - Reviewing repeated observations
+2. **Corporate Security** - Identifying repeated-observation patterns
 3. **Network Administration** - Monitoring wireless environments
 4. **Security Research** - Analyzing device behavior patterns
 
 ### 🌟 What Makes CYT Special
 
-- **First tool** to provide spectacular Google Earth visualization for Wi-Fi surveillance
+- **First tool** to provide Google Earth visualization for Wi-Fi observation review
 - **Security-first approach** with comprehensive hardening
 - **Real-world applicability** with GPS integration and multi-location tracking
 - **Professional presentation** suitable for corporate and research environments
+
+### Interpretation Limits
+
+- Aggregated source rows may not represent distinct sightings
+- MAC randomization may split one physical device across multiple identifiers
+- Shared devices and static devices can both create repeated observations
+- Location labels are analysis labels, not proof of precise device position
+- The output does not establish identity, movement, following, stalking, surveillance, or intent
 
 ### 🎯 Target Audience
 
