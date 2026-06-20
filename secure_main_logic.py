@@ -1,21 +1,23 @@
 """
 Secure main logic for Chasing Your Tail - replaces vulnerable SQL operations
 """
+import math
 import logging
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Optional, Tuple
 from secure_database import SecureKismetDB, SecureTimeWindows
 
 logger = logging.getLogger(__name__)
 
 class SecureCYTMonitor:
     """Secure monitoring logic for CYT"""
-    
+
     def __init__(self, config: dict, ignore_list: List[str], ssid_ignore_list: List[str], log_file):
         self.config = config
         self.ignore_list = set(mac.upper() for mac in ignore_list)  # Convert to set for O(1) lookup
         self.ssid_ignore_list = set(ssid_ignore_list)
         self.log_file = log_file
         self.time_manager = SecureTimeWindows(config)
+        self._processed_rows: Dict[Tuple[str, float], None] = {}
         
         # Initialize tracking lists
         self.past_five_mins_macs: Set[str] = set()
@@ -119,25 +121,88 @@ class SecureCYTMonitor:
         """Process current activity and detect matches"""
         try:
             boundaries = self.time_manager.get_time_boundaries()
+            current_time_boundary = boundaries['current_time']
+            self._prune_processed_rows(current_time_boundary)
             
             # Get current devices and probes
-            current_devices = db.get_devices_by_time_range(boundaries['current_time'])
+            current_devices = db.get_devices_by_time_range(current_time_boundary)
             
             for device in current_devices:
                 mac = device['mac']
                 device_data = device.get('device_data', {})
+                last_time = device.get('last_time')
                 
                 if not mac:
                     continue
+
+                normalized_mac = mac.upper()
+                if not self._should_process_row(normalized_mac, last_time):
+                    continue
                 
                 # Check for probe requests
-                self._process_probe_requests(device_data, mac)
+                self._process_probe_requests(device_data, normalized_mac)
                 
                 # Check MAC address tracking
-                self._process_mac_tracking(mac)
+                self._process_mac_tracking(normalized_mac)
                 
         except Exception as e:
             logger.error(f"Error processing current activity: {e}")
+
+    def _normalize_last_time(self, last_time: object) -> Optional[float]:
+        """Normalize last_time values for row-level deduplication."""
+        if last_time is None:
+            return None
+
+        try:
+            normalized = float(last_time)
+        except (TypeError, ValueError):
+            return None
+
+        if not math.isfinite(normalized):
+            return None
+
+        return normalized
+
+    def _dedup_key_for_row(self, mac: str, last_time: object) -> Optional[Tuple[str, float]]:
+        """Build a stable deduplication key for a device row."""
+        if not isinstance(mac, str) or not mac.strip():
+            return None
+
+        normalized_last_time = self._normalize_last_time(last_time)
+        if normalized_last_time is None:
+            return None
+
+        return (mac.upper(), normalized_last_time)
+
+    def _prune_processed_rows(self, current_time_boundary: object) -> None:
+        """Drop only dedup keys that are older than the active query window."""
+        try:
+            normalized_boundary = float(current_time_boundary)
+        except (TypeError, ValueError):
+            return
+
+        if not math.isfinite(normalized_boundary):
+            return
+
+        stale_keys = [
+            row_key
+            for row_key in self._processed_rows
+            if row_key[1] < normalized_boundary
+        ]
+        for row_key in stale_keys:
+            del self._processed_rows[row_key]
+
+    def _should_process_row(self, mac: str, last_time: object) -> bool:
+        """Return False for repeated unchanged rows."""
+        row_key = self._dedup_key_for_row(mac, last_time)
+        if row_key is None:
+            return True
+
+        if row_key in self._processed_rows:
+            return False
+
+        self._processed_rows[row_key] = None
+        return True
     
     def _process_probe_requests(self, device_data: Dict, mac: str) -> None:
         """Process probe requests from device data"""

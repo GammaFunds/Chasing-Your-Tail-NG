@@ -6,15 +6,17 @@
 import sqlite3
 import time
 from datetime import datetime, timedelta
-import glob
-import os
 import json
 import pathlib
 import signal
 import sys
 import logging
 from secure_ignore_loader import load_ignore_lists
-from secure_database import SecureKismetDB, SecureTimeWindows
+from secure_database import (
+    SecureKismetDB,
+    SecureTimeWindows,
+    select_runtime_kismet_db,
+)
 from secure_main_logic import SecureCYTMonitor
 from secure_credentials import secure_config_loader
 
@@ -60,15 +62,15 @@ cyt_log.write(f'{len(probe_ignore_list)} Probed SSIDs added to ignore list.\n')
 logging.info(f"Securely loaded {len(ignore_list)} MAC addresses and {len(probe_ignore_list)} SSIDs")
 
 ### Set Initial Variables - SECURE VERSION
-db_path = config['paths']['kismet_logs']
+db_path_pattern = config['paths']['kismet_logs']
 
 ######Find Newest DB file - SECURE
 try:
-    list_of_files = glob.glob(db_path)
-    if not list_of_files:
-        raise FileNotFoundError(f"No Kismet database files found at: {db_path}")
-    
-    latest_file = max(list_of_files, key=os.path.getctime)
+    latest_file = find_newest_matching_kismet_db(db_path_pattern)
+    if latest_file is None:
+        raise FileNotFoundError(f"No Kismet database files found at: {db_path_pattern}")
+
+    latest_file = str(latest_file)
     print(f"Pulling data from: {latest_file}")
     cyt_log.write(f"Pulling data from: {latest_file}\n")
     logging.info(f"Using Kismet database: {latest_file}")
@@ -115,8 +117,11 @@ print(f"Monitoring every {check_interval} seconds, updating lists every {list_up
 
 while True:
     time_count += 1
-    
+
     try:
+        selected_file, _switched = select_runtime_kismet_db(latest_file, db_path_pattern)
+        latest_file = str(selected_file)
+
         # Process current activity with secure database operations
         with SecureKismetDB(latest_file) as db:
             secure_monitor.process_current_activity(db)

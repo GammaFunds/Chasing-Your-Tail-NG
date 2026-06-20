@@ -1,14 +1,81 @@
 """
 Secure database operations - prevents SQL injection
 """
+import glob
+import logging
+import pathlib
 import sqlite3
 import json
-import logging
 from typing import List, Tuple, Optional, Dict, Any
 from datetime import datetime, timedelta
 import time
 
 logger = logging.getLogger(__name__)
+
+
+def find_newest_matching_kismet_db(pattern: str) -> Optional[pathlib.Path]:
+    """Return the newest matching Kismet database path for a glob pattern."""
+    newest_path: Optional[pathlib.Path] = None
+    newest_key: Optional[tuple[int, str]] = None
+
+    for match in glob.glob(pattern):
+        path = pathlib.Path(match)
+        try:
+            if not path.is_file():
+                continue
+            stat_result = path.stat()
+        except OSError:
+            continue
+
+        candidate_key = (stat_result.st_mtime_ns, str(path))
+        if newest_key is None or candidate_key > newest_key:
+            newest_key = candidate_key
+            newest_path = path
+
+    return newest_path
+
+
+def select_runtime_kismet_db(current_path: str, pattern: str) -> Tuple[pathlib.Path, bool]:
+    """
+    Resolve the active Kismet database path for runtime monitoring.
+
+    Returns the current path unchanged when discovery yields no usable
+    replacement or when the candidate cannot be opened/validated.
+    """
+    current_db_path = pathlib.Path(current_path)
+    candidate_path = find_newest_matching_kismet_db(pattern)
+
+    if candidate_path is None:
+        logger.warning(
+            "No Kismet database candidates matched pattern: %s; retaining %s",
+            pattern,
+            current_db_path,
+        )
+        return current_db_path, False
+
+    if candidate_path == current_db_path:
+        return current_db_path, False
+
+    try:
+        with SecureKismetDB(str(candidate_path)) as candidate_db:
+            if not candidate_db.validate_connection():
+                logger.warning(
+                    "Retaining current Kismet database %s after candidate %s failed validation",
+                    current_db_path,
+                    candidate_path,
+                )
+                return current_db_path, False
+    except Exception as exc:
+        logger.warning(
+            "Retaining current Kismet database %s after candidate %s could not be opened or validated: %s",
+            current_db_path,
+            candidate_path,
+            exc,
+        )
+        return current_db_path, False
+
+    logger.info("Using Kismet database: %s", candidate_path)
+    return candidate_path, True
 
 class SecureKismetDB:
     """Secure wrapper for Kismet database operations"""
