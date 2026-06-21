@@ -11,8 +11,10 @@ from typing import Union
 
 from observation_contract import (
     ObservationEventV1,
+    ObservationLocationLinkV1,
     ObservationProvenanceV1,
     create_observation_event,
+    create_observation_location_link,
 )
 from observation_store import ObservationStore
 
@@ -27,6 +29,12 @@ _REQUIRED_PACKET_COLUMNS = {
     "error": {"INT", "INTEGER"},
     "hash": {"INT", "INTEGER"},
     "packetid": {"INT", "INTEGER"},
+}
+
+
+_LOCATION_PACKET_COLUMNS = {
+    "lat": {"REAL"},
+    "lon": {"REAL"},
 }
 
 _SOURCE_TYPE = "kismet.packet"
@@ -85,6 +93,98 @@ class KismetPacketReplaySummaryV1:
         ):
             raise ValueError(
                 "total_rows must equal the result-count sum"
+            )
+
+
+@dataclass(frozen=True)
+class KismetPacketLocatedRecordV1:
+    """One decoded event and its optional same-packet location link."""
+
+    event: ObservationEventV1
+    location_link: ObservationLocationLinkV1 | None
+
+    def __post_init__(self) -> None:
+        if type(self.event) is not ObservationEventV1:
+            raise ValueError(
+                "event must be ObservationEventV1"
+            )
+
+        if (
+            self.location_link is not None
+            and type(self.location_link)
+            is not ObservationLocationLinkV1
+        ):
+            raise ValueError(
+                "location_link must be "
+                "ObservationLocationLinkV1 or None"
+            )
+
+        if (
+            self.location_link is not None
+            and self.location_link.observation_id
+            != self.event.observation_id
+        ):
+            raise ValueError(
+                "location_link must reference its event"
+            )
+
+
+@dataclass(frozen=True)
+class KismetPacketLocationReplaySummaryV1:
+    """Content-free event and link outcomes for one replay."""
+
+    total_rows: int
+    events_inserted: int
+    events_duplicate: int
+    events_identity_conflict: int
+    location_rows: int
+    links_inserted: int
+    links_duplicate: int
+    links_identity_conflict: int
+    links_skipped_event_conflict: int
+
+    def __post_init__(self) -> None:
+        names = (
+            "total_rows",
+            "events_inserted",
+            "events_duplicate",
+            "events_identity_conflict",
+            "location_rows",
+            "links_inserted",
+            "links_duplicate",
+            "links_identity_conflict",
+            "links_skipped_event_conflict",
+        )
+
+        for name in names:
+            value = getattr(self, name)
+
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise ValueError(
+                    f"{name} must be a non-negative integer"
+                )
+
+        if self.total_rows != (
+            self.events_inserted
+            + self.events_duplicate
+            + self.events_identity_conflict
+        ):
+            raise ValueError(
+                "total_rows must equal the event-outcome sum"
+            )
+
+        if self.location_rows != (
+            self.links_inserted
+            + self.links_duplicate
+            + self.links_identity_conflict
+            + self.links_skipped_event_conflict
+        ):
+            raise ValueError(
+                "location_rows must equal the link-outcome sum"
             )
 
 
@@ -404,9 +504,340 @@ def replay_kismet_packet_snapshot(
     )
 
 
+def _validate_location_schema(
+    connection: sqlite3.Connection,
+) -> None:
+    try:
+        rows = connection.execute(
+            "PRAGMA table_info(packets)"
+        ).fetchall()
+    except sqlite3.Error:
+        raise KismetPacketAdapterError(
+            "Kismet packet location schema is unavailable"
+        ) from None
+
+    if not rows:
+        raise KismetPacketAdapterError(
+            "Kismet packet location schema is unavailable"
+        )
+
+    actual = {
+        row["name"]: row["type"].upper()
+        for row in rows
+    }
+
+    for (
+        column,
+        accepted_types,
+    ) in _LOCATION_PACKET_COLUMNS.items():
+        if column not in actual:
+            raise KismetPacketAdapterError(
+                "Kismet packet location schema is missing "
+                "required columns"
+            )
+
+        if actual[column] not in accepted_types:
+            raise KismetPacketAdapterError(
+                "Kismet packet location schema has "
+                "incompatible column types"
+            )
+
+
+def _normalize_same_packet_location(
+    latitude_value: object,
+    longitude_value: object,
+) -> tuple[float, float] | None:
+    if latitude_value is None and longitude_value is None:
+        return None
+
+    if (
+        latitude_value is None
+        or longitude_value is None
+        or isinstance(latitude_value, bool)
+        or isinstance(longitude_value, bool)
+        or not isinstance(latitude_value, (int, float))
+        or not isinstance(longitude_value, (int, float))
+    ):
+        raise KismetPacketAdapterError(
+            "packet location fields are invalid"
+        )
+
+    latitude = float(latitude_value)
+    longitude = float(longitude_value)
+
+    if not (
+        -90.0 <= latitude <= 90.0
+        and -180.0 <= longitude <= 180.0
+    ):
+        raise KismetPacketAdapterError(
+            "packet location fields are outside valid bounds"
+        )
+
+    # Preserve the repository's existing Kismet GPS boundary:
+    # zero in either coordinate means no usable packet location.
+    if latitude == 0.0 or longitude == 0.0:
+        return None
+
+    return latitude, longitude
+
+
+def decode_kismet_packet_snapshot_with_locations(
+    db_path: Union[str, Path],
+    *,
+    hmac_key: bytes,
+    collection_session_id: str,
+    ingest_timestamp_us: int,
+) -> tuple[KismetPacketLocatedRecordV1, ...]:
+    """Decode packet events and deterministic same-row locations."""
+
+    path = Path(db_path)
+
+    if not path.is_file():
+        raise KismetPacketAdapterError(
+            "Kismet packet source is unavailable"
+        )
+
+    database_uri = path.resolve().as_uri() + "?mode=ro"
+
+    provenance = ObservationProvenanceV1(
+        collector_name=_COLLECTOR_NAME,
+        collector_version=_COLLECTOR_VERSION,
+        ingest_mode=_INGEST_MODE,
+        source_schema_version=_SOURCE_SCHEMA_VERSION,
+    )
+
+    try:
+        with closing(
+            sqlite3.connect(database_uri, uri=True)
+        ) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only = ON")
+
+            db_version = _read_db_version(connection)
+            _validate_packet_schema(connection)
+            _validate_location_schema(connection)
+
+            rows = connection.execute(
+                """
+                SELECT
+                    rowid AS source_rowid,
+                    ts_sec,
+                    ts_usec,
+                    sourcemac,
+                    datasource,
+                    hash AS packet_hash,
+                    packetid AS packet_id,
+                    lat AS packet_latitude,
+                    lon AS packet_longitude
+                FROM packets
+                WHERE error = 0
+                ORDER BY rowid
+                """
+            ).fetchall()
+    except KismetPacketAdapterError:
+        raise
+    except sqlite3.Error:
+        raise KismetPacketAdapterError(
+            "unable to read Kismet packet source"
+        ) from None
+
+    decoded: list[KismetPacketLocatedRecordV1] = []
+
+    for row_number, row in enumerate(rows, 1):
+        try:
+            source_rowid = _require_integer(
+                "source_rowid",
+                row["source_rowid"],
+                minimum=1,
+            )
+            ts_sec = _require_integer(
+                "ts_sec",
+                row["ts_sec"],
+                minimum=0,
+            )
+            ts_usec = _require_integer(
+                "ts_usec",
+                row["ts_usec"],
+                minimum=0,
+                maximum=999_999,
+            )
+            packet_hash = _require_integer(
+                "packet_hash",
+                row["packet_hash"],
+            )
+            packet_id = _require_integer(
+                "packet_id",
+                row["packet_id"],
+                minimum=0,
+            )
+            datasource = _normalize_datasource(
+                row["datasource"]
+            )
+            (
+                device_identifier,
+                device_identifier_kind,
+            ) = _normalize_source_mac(
+                row["sourcemac"]
+            )
+
+            source_timestamp_us = (
+                ts_sec * 1_000_000 + ts_usec
+            )
+
+            event = create_observation_event(
+                hmac_key=hmac_key,
+                collection_session_id=collection_session_id,
+                source_type=_SOURCE_TYPE,
+                sensor_id=datasource,
+                source_timestamp_us=source_timestamp_us,
+                ingest_timestamp_us=ingest_timestamp_us,
+                source_record_reference=_source_reference(
+                    db_version=db_version,
+                    source_rowid=source_rowid,
+                    packet_hash=packet_hash,
+                    packet_id=packet_id,
+                ),
+                provenance=provenance,
+                device_identifier=device_identifier,
+                device_identifier_kind=device_identifier_kind,
+            )
+
+            location = _normalize_same_packet_location(
+                row["packet_latitude"],
+                row["packet_longitude"],
+            )
+
+            if location is None:
+                link = None
+            else:
+                latitude, longitude = location
+
+                link = create_observation_location_link(
+                    hmac_key=hmac_key,
+                    observation=event,
+                    operator_fix_id=(
+                        event.observation_id
+                        + ".same_packet_fix_v1"
+                    ),
+                    operator_latitude=latitude,
+                    operator_longitude=longitude,
+                    operator_fix_timestamp_us=(
+                        event.source_timestamp_us
+                    ),
+                    correlation_method="same_source_record",
+                    correlation_version="1.0",
+                    operator_location_accuracy_m=None,
+                )
+        except (
+            KismetPacketAdapterError,
+            TypeError,
+            ValueError,
+        ):
+            raise KismetPacketAdapterError(
+                f"packet row {row_number}: invalid source fields"
+            ) from None
+
+        decoded.append(
+            KismetPacketLocatedRecordV1(
+                event=event,
+                location_link=link,
+            )
+        )
+
+    return tuple(decoded)
+
+
+def replay_kismet_packet_snapshot_with_locations(
+    db_path: Union[str, Path],
+    *,
+    store: ObservationStore,
+    hmac_key: bytes,
+    collection_session_id: str,
+    ingest_timestamp_us: int,
+) -> KismetPacketLocationReplaySummaryV1:
+    """Decode the bounded snapshot before writing events and links."""
+
+    if type(store) is not ObservationStore:
+        raise ValueError("store must be ObservationStore")
+
+    records = decode_kismet_packet_snapshot_with_locations(
+        db_path,
+        hmac_key=hmac_key,
+        collection_session_id=collection_session_id,
+        ingest_timestamp_us=ingest_timestamp_us,
+    )
+
+    event_counts = {
+        "inserted": 0,
+        "duplicate": 0,
+        "identity_conflict": 0,
+    }
+    link_counts = {
+        "inserted": 0,
+        "duplicate": 0,
+        "identity_conflict": 0,
+    }
+    location_rows = 0
+    skipped_event_conflict = 0
+
+    for record in records:
+        event_result = store.insert_observation_event(
+            record.event
+        )
+
+        if event_result not in _STORE_RESULTS:
+            raise RuntimeError(
+                "unexpected observation store result"
+            )
+
+        event_counts[event_result] += 1
+
+        if record.location_link is None:
+            continue
+
+        location_rows += 1
+
+        if event_result == "identity_conflict":
+            skipped_event_conflict += 1
+            continue
+
+        link_result = store.insert_observation_location_link(
+            record.location_link
+        )
+
+        if link_result not in _STORE_RESULTS:
+            raise RuntimeError(
+                "unexpected location-link store result"
+            )
+
+        link_counts[link_result] += 1
+
+    return KismetPacketLocationReplaySummaryV1(
+        total_rows=len(records),
+        events_inserted=event_counts["inserted"],
+        events_duplicate=event_counts["duplicate"],
+        events_identity_conflict=event_counts[
+            "identity_conflict"
+        ],
+        location_rows=location_rows,
+        links_inserted=link_counts["inserted"],
+        links_duplicate=link_counts["duplicate"],
+        links_identity_conflict=link_counts[
+            "identity_conflict"
+        ],
+        links_skipped_event_conflict=(
+            skipped_event_conflict
+        ),
+    )
+
+
 __all__ = [
     "KismetPacketAdapterError",
+    "KismetPacketLocatedRecordV1",
+    "KismetPacketLocationReplaySummaryV1",
     "KismetPacketReplaySummaryV1",
     "decode_kismet_packet_snapshot",
+    "decode_kismet_packet_snapshot_with_locations",
     "replay_kismet_packet_snapshot",
+    "replay_kismet_packet_snapshot_with_locations",
 ]
