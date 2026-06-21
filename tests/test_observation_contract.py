@@ -6,9 +6,12 @@ from observation_contract import (
     ObservationEventV1,
     ObservationLocationLinkV1,
     ObservationProvenanceV1,
+    OperatorFixV1,
     compare_observation_source_facts,
+    compare_operator_fix_source_facts,
     create_observation_event,
     create_observation_location_link,
+    create_operator_fix,
 )
 
 
@@ -446,6 +449,292 @@ class ObservationContractV1Tests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     self.event(hmac_key=value)
+
+
+class OperatorFixV1Tests(unittest.TestCase):
+    KEY = b"synthetic-contract-test-key"
+
+    @staticmethod
+    def provenance(
+        *,
+        collector_name="synthetic_collector",
+        collector_version="1.2.3",
+        ingest_mode="live",
+        source_schema_version="synthetic-v1",
+    ):
+        return ObservationProvenanceV1(
+            collector_name=collector_name,
+            collector_version=collector_version,
+            ingest_mode=ingest_mode,
+            source_schema_version=source_schema_version,
+        )
+
+    def fix(self, **overrides):
+        values = {
+            "hmac_key": self.KEY,
+            "collection_session_id": "collection_alpha",
+            "source_type": "synthetic.gps",
+            "sensor_id": "sensor_alpha",
+            "operator_fix_timestamp_us": 1_000_000,
+            "ingest_timestamp_us": 1_000_250,
+            "source_record_reference": "fix_record_alpha",
+            "provenance": self.provenance(),
+            "operator_latitude": 33.0,
+            "operator_longitude": -112.0,
+            "operator_location_accuracy_m": 5.0,
+        }
+        values.update(overrides)
+        return create_operator_fix(**values)
+
+    def test_deterministic_identity_and_fix_v1_prefix(self):
+        first = self.fix()
+        second = self.fix()
+
+        self.assertEqual(
+            first.operator_fix_id,
+            second.operator_fix_id,
+        )
+        self.assertRegex(
+            first.operator_fix_id,
+            r"^fix_v1_[0-9a-f]{64}$",
+        )
+
+    def test_every_identity_input_changes_operator_fix_id(self):
+        baseline = self.fix()
+
+        cases = {
+            "source_type": {
+                "source_type": "synthetic.alternate",
+            },
+            "sensor_id": {
+                "sensor_id": "sensor_beta",
+            },
+            "collection_session_id": {
+                "collection_session_id": "collection_beta",
+            },
+            "source_record_reference": {
+                "source_record_reference": "fix_record_beta",
+            },
+        }
+
+        for name, overrides in cases.items():
+            with self.subTest(name=name):
+                changed = self.fix(**overrides)
+                self.assertNotEqual(
+                    baseline.operator_fix_id,
+                    changed.operator_fix_id,
+                )
+
+    def test_nonidentity_fields_do_not_change_operator_fix_id(
+        self,
+    ):
+        baseline = self.fix()
+
+        cases = {
+            "operator_fix_timestamp_us": {
+                "operator_fix_timestamp_us": 2_000_000,
+            },
+            "ingest_timestamp_us": {
+                "ingest_timestamp_us": 2_000_250,
+            },
+            "operator_latitude": {
+                "operator_latitude": 40.0,
+            },
+            "operator_longitude": {
+                "operator_longitude": -75.0,
+            },
+            "operator_location_accuracy_m": {
+                "operator_location_accuracy_m": 10.0,
+            },
+            "provenance": {
+                "provenance": self.provenance(
+                    collector_name="other_collector",
+                    ingest_mode="replay",
+                ),
+            },
+        }
+
+        for name, overrides in cases.items():
+            with self.subTest(name=name):
+                changed = self.fix(**overrides)
+                self.assertEqual(
+                    baseline.operator_fix_id,
+                    changed.operator_fix_id,
+                )
+
+    def test_changed_source_facts_produce_identity_conflict(
+        self,
+    ):
+        existing = self.fix()
+
+        cases = {
+            "source_type": {
+                "source_type": "synthetic.alternate",
+            },
+            "sensor_id": {
+                "sensor_id": "sensor_beta",
+            },
+            "collection_session_id": {
+                "collection_session_id": "collection_beta",
+            },
+            "source_record_reference": {
+                "source_record_reference": "fix_record_beta",
+            },
+            "operator_fix_timestamp_us": {
+                "operator_fix_timestamp_us": 2_000_000,
+            },
+            "operator_latitude": {
+                "operator_latitude": 40.0,
+            },
+            "operator_longitude": {
+                "operator_longitude": -75.0,
+            },
+            "operator_location_accuracy_m": {
+                "operator_location_accuracy_m": 10.0,
+            },
+        }
+
+        for name, overrides in cases.items():
+            with self.subTest(name=name):
+                incoming = self.fix(**overrides)
+                self.assertEqual(
+                    compare_operator_fix_source_facts(
+                        existing,
+                        incoming,
+                    ),
+                    "identity_conflict",
+                )
+
+    def test_changed_ingest_or_provenance_remains_duplicate(
+        self,
+    ):
+        existing = self.fix()
+        incoming = self.fix(
+            ingest_timestamp_us=9_000_000,
+            provenance=self.provenance(
+                collector_version="9.9.9",
+                ingest_mode="replay",
+            ),
+        )
+
+        self.assertEqual(
+            compare_operator_fix_source_facts(
+                existing,
+                incoming,
+            ),
+            "duplicate",
+        )
+
+    def test_legal_coordinates(self):
+        coords = (
+            (33.0, -112.0),
+            (-33.0, 120.0),
+            (90.0, 180.0),
+            (-90.0, -180.0),
+            (0.0, 0.0),
+        )
+
+        for lat, lon in coords:
+            with self.subTest(lat=lat, lon=lon):
+                fix = self.fix(
+                    operator_latitude=lat,
+                    operator_longitude=lon,
+                )
+                self.assertEqual(fix.operator_latitude, lat)
+                self.assertEqual(fix.operator_longitude, lon)
+
+    def test_rejects_malformed_operator_fix_id(self):
+        with self.assertRaises(ValueError):
+            OperatorFixV1(
+                schema_version="1.0",
+                record_kind="operator_fix",
+                operator_fix_id="bad_id",
+                collection_session_id="session_alpha",
+                source_type="synthetic.gps",
+                sensor_id="sensor_alpha",
+                operator_fix_timestamp_us=1_000_000,
+                ingest_timestamp_us=1_000_250,
+                source_record_reference="record_alpha",
+                provenance=ObservationProvenanceV1(
+                    collector_name="test",
+                    collector_version="1.0",
+                    ingest_mode="live",
+                ),
+                operator_latitude=33.0,
+                operator_longitude=-112.0,
+            )
+
+    def test_rejects_wrong_record_kind(self):
+        with self.assertRaises(ValueError):
+            OperatorFixV1(
+                schema_version="1.0",
+                record_kind="observation_event",
+                operator_fix_id="fix_v1_"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                collection_session_id="session_alpha",
+                source_type="synthetic.gps",
+                sensor_id="sensor_alpha",
+                operator_fix_timestamp_us=1_000_000,
+                ingest_timestamp_us=1_000_250,
+                source_record_reference="record_alpha",
+                provenance=ObservationProvenanceV1(
+                    collector_name="test",
+                    collector_version="1.0",
+                    ingest_mode="live",
+                ),
+                operator_latitude=33.0,
+                operator_longitude=-112.0,
+            )
+
+    def test_rejects_invalid_timestamps(self):
+        for field in (
+            "operator_fix_timestamp_us",
+            "ingest_timestamp_us",
+        ):
+            for value in (True, 1.25, -1):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(ValueError):
+                        self.fix(**{field: value})
+
+    def test_rejects_nonfinite_or_out_of_range_coordinates(
+        self,
+    ):
+        invalid_cases = (
+            {"operator_latitude": 90.0001},
+            {"operator_latitude": -90.0001},
+            {"operator_longitude": 180.0001},
+            {"operator_longitude": -180.0001},
+            {"operator_latitude": math.nan},
+            {"operator_longitude": math.inf},
+            {"operator_latitude": True},
+        )
+
+        for values in invalid_cases:
+            with self.subTest(values=values):
+                with self.assertRaises(ValueError):
+                    self.fix(**values)
+
+    def test_rejects_invalid_accuracy(self):
+        invalid_cases = (
+            {"operator_location_accuracy_m": -0.1},
+            {"operator_location_accuracy_m": math.inf},
+            {"operator_location_accuracy_m": math.nan},
+        )
+
+        for values in invalid_cases:
+            with self.subTest(values=values):
+                with self.assertRaises(ValueError):
+                    self.fix(**values)
+
+    def test_optional_accuracy_allows_none(self):
+        fix = self.fix(operator_location_accuracy_m=None)
+        self.assertIsNone(fix.operator_location_accuracy_m)
+
+    def test_operator_fix_is_frozen(self):
+        fix = self.fix()
+
+        with self.assertRaises(FrozenInstanceError):
+            fix.sensor_id = "sensor_changed"
 
 
 if __name__ == "__main__":

@@ -14,12 +14,14 @@ from typing import Optional
 SCHEMA_VERSION_V1 = "1.0"
 OBSERVATION_RECORD_KIND = "observation_event"
 LOCATION_LINK_RECORD_KIND = "observation_location_link"
+OPERATOR_FIX_RECORD_KIND = "operator_fix"
 
 _SOURCE_TYPE_RE = re.compile(
     r"^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+$"
 )
 _OBSERVATION_ID_RE = re.compile(r"^obs_v1_[0-9a-f]{64}$")
 _LOCATION_LINK_ID_RE = re.compile(r"^loc_v1_[0-9a-f]{64}$")
+_OPERATOR_FIX_ID_RE = re.compile(r"^fix_v1_[0-9a-f]{64}$")
 
 _DUPLICATE = "duplicate"
 _IDENTITY_CONFLICT = "identity_conflict"
@@ -324,6 +326,96 @@ class ObservationLocationLinkV1:
                 )
 
 
+@dataclass(frozen=True)
+class OperatorFixV1:
+    """Immutable, source-neutral operator GPS fix."""
+
+    schema_version: str
+    record_kind: str
+    operator_fix_id: str
+    collection_session_id: str
+    source_type: str
+    sensor_id: str
+    operator_fix_timestamp_us: int
+    ingest_timestamp_us: int
+    source_record_reference: str
+    provenance: ObservationProvenanceV1
+    operator_latitude: float
+    operator_longitude: float
+    operator_location_accuracy_m: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.schema_version != SCHEMA_VERSION_V1:
+            raise ValueError('schema_version must be exactly "1.0"')
+
+        if self.record_kind != OPERATOR_FIX_RECORD_KIND:
+            raise ValueError(
+                'record_kind must be exactly "operator_fix"'
+            )
+
+        if _OPERATOR_FIX_ID_RE.fullmatch(
+            self.operator_fix_id
+        ) is None:
+            raise ValueError("invalid operator_fix_id")
+
+        _require_text(
+            "collection_session_id",
+            self.collection_session_id,
+        )
+        _require_source_type(self.source_type)
+        _require_text("sensor_id", self.sensor_id)
+        _require_timestamp_us(
+            "operator_fix_timestamp_us",
+            self.operator_fix_timestamp_us,
+        )
+        _require_timestamp_us(
+            "ingest_timestamp_us",
+            self.ingest_timestamp_us,
+        )
+        _require_text(
+            "source_record_reference",
+            self.source_record_reference,
+        )
+
+        if not isinstance(
+            self.provenance,
+            ObservationProvenanceV1,
+        ):
+            raise ValueError(
+                "provenance must be ObservationProvenanceV1"
+            )
+
+        latitude = _require_finite_number(
+            "operator_latitude",
+            self.operator_latitude,
+        )
+        longitude = _require_finite_number(
+            "operator_longitude",
+            self.operator_longitude,
+        )
+
+        if not -90.0 <= latitude <= 90.0:
+            raise ValueError(
+                "operator_latitude must be between -90 and 90"
+            )
+
+        if not -180.0 <= longitude <= 180.0:
+            raise ValueError(
+                "operator_longitude must be between -180 and 180"
+            )
+
+        if self.operator_location_accuracy_m is not None:
+            accuracy = _require_finite_number(
+                "operator_location_accuracy_m",
+                self.operator_location_accuracy_m,
+            )
+
+            if accuracy < 0:
+                raise ValueError(
+                    "operator_location_accuracy_m must be >= 0"
+                )
+
+
 def create_observation_event(
     *,
     hmac_key: bytes,
@@ -449,6 +541,61 @@ def create_observation_location_link(
     )
 
 
+def create_operator_fix(
+    *,
+    hmac_key: bytes,
+    collection_session_id: str,
+    source_type: str,
+    sensor_id: str,
+    operator_fix_timestamp_us: int,
+    ingest_timestamp_us: int,
+    source_record_reference: str,
+    provenance: ObservationProvenanceV1,
+    operator_latitude: float,
+    operator_longitude: float,
+    operator_location_accuracy_m: Optional[float] = None,
+) -> OperatorFixV1:
+    """Create an operator fix with a deterministic local HMAC identity."""
+
+    normalized_source_type = _require_source_type(source_type)
+    normalized_sensor_id = _require_text("sensor_id", sensor_id)
+    normalized_session_id = _require_text(
+        "collection_session_id",
+        collection_session_id,
+    )
+    normalized_reference = _require_text(
+        "source_record_reference",
+        source_record_reference,
+    )
+
+    operator_fix_id = _derive_hmac_identifier(
+        "fix_v1_",
+        hmac_key,
+        (
+            normalized_source_type,
+            normalized_sensor_id,
+            normalized_session_id,
+            normalized_reference,
+        ),
+    )
+
+    return OperatorFixV1(
+        schema_version=SCHEMA_VERSION_V1,
+        record_kind=OPERATOR_FIX_RECORD_KIND,
+        operator_fix_id=operator_fix_id,
+        collection_session_id=normalized_session_id,
+        source_type=normalized_source_type,
+        sensor_id=normalized_sensor_id,
+        operator_fix_timestamp_us=operator_fix_timestamp_us,
+        ingest_timestamp_us=ingest_timestamp_us,
+        source_record_reference=normalized_reference,
+        provenance=provenance,
+        operator_latitude=operator_latitude,
+        operator_longitude=operator_longitude,
+        operator_location_accuracy_m=operator_location_accuracy_m,
+    )
+
+
 def compare_observation_source_facts(
     existing: ObservationEventV1,
     incoming: ObservationEventV1,
@@ -491,11 +638,55 @@ def compare_observation_source_facts(
     return _IDENTITY_CONFLICT
 
 
+def compare_operator_fix_source_facts(
+    existing: OperatorFixV1,
+    incoming: OperatorFixV1,
+) -> str:
+    """Return duplicate or identity_conflict for two operator fixes."""
+
+    if not isinstance(existing, OperatorFixV1):
+        raise ValueError("existing must be OperatorFixV1")
+
+    if not isinstance(incoming, OperatorFixV1):
+        raise ValueError("incoming must be OperatorFixV1")
+
+    if existing.operator_fix_id != incoming.operator_fix_id:
+        return _IDENTITY_CONFLICT
+
+    fields = (
+        "source_type",
+        "sensor_id",
+        "collection_session_id",
+        "source_record_reference",
+        "operator_fix_timestamp_us",
+        "operator_latitude",
+        "operator_longitude",
+        "operator_location_accuracy_m",
+    )
+
+    existing_facts = tuple(
+        getattr(existing, field)
+        for field in fields
+    )
+    incoming_facts = tuple(
+        getattr(incoming, field)
+        for field in fields
+    )
+
+    if existing_facts == incoming_facts:
+        return _DUPLICATE
+
+    return _IDENTITY_CONFLICT
+
+
 __all__ = [
     "ObservationEventV1",
     "ObservationLocationLinkV1",
     "ObservationProvenanceV1",
+    "OperatorFixV1",
     "compare_observation_source_facts",
+    "compare_operator_fix_source_facts",
     "create_observation_event",
     "create_observation_location_link",
+    "create_operator_fix",
 ]
