@@ -174,6 +174,47 @@ class ObservationStore:
             return None
         return self._event_from_row(row)
 
+    def list_observation_events(
+        self,
+        *,
+        collection_session_id: Optional[str] = None,
+    ) -> tuple[ObservationEventV1, ...]:
+        """Return events in deterministic source-time order."""
+
+        self._ensure_open()
+
+        if collection_session_id is not None:
+            if (
+                not isinstance(collection_session_id, str)
+                or not collection_session_id.strip()
+            ):
+                raise ValueError(
+                    "collection_session_id must be non-empty text"
+                )
+
+            rows = self._connection.execute(
+                """
+                SELECT *
+                FROM observation_events
+                WHERE collection_session_id = ?
+                ORDER BY source_timestamp_us, observation_id
+                """,
+                (collection_session_id,),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                """
+                SELECT *
+                FROM observation_events
+                ORDER BY source_timestamp_us, observation_id
+                """
+            ).fetchall()
+
+        return tuple(
+            self._event_from_row(row)
+            for row in rows
+        )
+
     def insert_observation_location_link(
         self,
         link: ObservationLocationLinkV1,
@@ -236,6 +277,47 @@ class ObservationStore:
         if row is None:
             return None
         return self._link_from_row(row)
+
+    def list_observation_location_links(
+        self,
+        *,
+        observation_id: Optional[str] = None,
+    ) -> tuple[ObservationLocationLinkV1, ...]:
+        """Return location links in deterministic fix-time order."""
+
+        self._ensure_open()
+
+        if observation_id is not None:
+            if (
+                not isinstance(observation_id, str)
+                or not observation_id.strip()
+            ):
+                raise ValueError(
+                    "observation_id must be non-empty text"
+                )
+
+            rows = self._connection.execute(
+                """
+                SELECT *
+                FROM observation_location_links
+                WHERE observation_id = ?
+                ORDER BY operator_fix_timestamp_us, location_link_id
+                """,
+                (observation_id,),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                """
+                SELECT *
+                FROM observation_location_links
+                ORDER BY operator_fix_timestamp_us, location_link_id
+                """
+            ).fetchall()
+
+        return tuple(
+            self._link_from_row(row)
+            for row in rows
+        )
 
     def _open(self) -> None:
         if self._connection is not None:
