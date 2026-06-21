@@ -2,11 +2,13 @@ import json
 import sqlite3
 import tempfile
 import unittest
+import contextlib
+import unittest.mock
 from pathlib import Path
 
 from gps_tracker import GPSTracker
 from surveillance_analyzer import SurveillanceAnalyzer
-from surveillance_detector import SurveillanceDetector
+from surveillance_detector import SurveillanceDetector, load_appearances_from_kismet
 
 
 def make_analyzer(max_delta_seconds: float = 30.0) -> SurveillanceAnalyzer:
@@ -440,6 +442,63 @@ class KismetGPSCorrelationFixtureTests(unittest.TestCase):
             "02:00:00:00:00:02",
             matched_session.devices_seen,
         )
+
+
+class ReadOnlyKismetDbTests(unittest.TestCase):
+    def test_load_appearances_from_kismet_uses_readonly_uri(self):
+        detector = SurveillanceDetector({})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_readonly.kismet"
+
+            with contextlib.closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE devices (
+                        devmac TEXT,
+                        last_time REAL,
+                        type TEXT,
+                        device TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO devices (devmac, last_time, type, device) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        "02:00:00:00:00:0a",
+                        1000.0,
+                        "Wi-Fi Client",
+                        json.dumps({}),
+                    ),
+                )
+                conn.commit()
+
+            with unittest.mock.patch(
+                "surveillance_detector.sqlite3.connect",
+                wraps=sqlite3.connect,
+            ) as mock_connect:
+                count = load_appearances_from_kismet(
+                    str(db_path),
+                    detector,
+                    location_id="unknown_location",
+                )
+
+        self.assertEqual(count, 1)
+
+        appearance = detector.appearances[0]
+        self.assertEqual(appearance.location_id, "unknown_location")
+        self.assertIsNone(appearance.gps_timestamp)
+        self.assertIsNone(appearance.gps_latitude)
+        self.assertIsNone(appearance.gps_longitude)
+        self.assertIsNone(appearance.gps_accuracy)
+        self.assertIsNone(appearance.source_to_fix_delta_ms)
+
+        mock_connect.assert_called_once()
+        args, kwargs = mock_connect.call_args
+        self.assertTrue(args[0].startswith("file://"))
+        self.assertIn("?mode=ro", args[0])
+        self.assertTrue(kwargs.get("uri"))
 
 
 if __name__ == "__main__":

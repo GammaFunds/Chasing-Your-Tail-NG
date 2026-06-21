@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from collections import defaultdict
+import contextlib
 import pathlib
 
 logger = logging.getLogger(__name__)
@@ -841,7 +842,8 @@ def load_appearances_from_kismet(db_path: str, detector: SurveillanceDetector,
                                location_id: str = "unknown") -> int:
     """Load device appearances from Kismet database"""
     try:
-        with sqlite3.connect(db_path) as conn:
+        database_uri = pathlib.Path(db_path).resolve().as_uri() + "?mode=ro"
+        with contextlib.closing(sqlite3.connect(database_uri, uri=True)) as conn:
             cursor = conn.cursor()
             
             # Get all devices with timestamps
