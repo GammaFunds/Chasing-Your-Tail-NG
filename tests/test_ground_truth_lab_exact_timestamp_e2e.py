@@ -13,6 +13,9 @@ from ground_truth_scenario_contract import (
     RECORD_KIND,
     SCHEMA_VERSION_V1,
 )
+from ground_truth_summary_builder import (
+    build_completed_ground_truth_summary_v1,
+)
 from observation_location_link_orchestrator import (
     run_bounded_observation_location_link_correlation,
 )
@@ -274,32 +277,17 @@ class TestExactTimestampCompletedScenarioMatchesManifest(unittest.TestCase):
         events = store.list_observation_events()
         links = store.list_observation_location_links()
 
-        linked_obs_ids = {link.observation_id for link in links}
-        unlinked_count = sum(
-            1 for ev in events if ev.observation_id not in linked_obs_ids
-        )
-
-        actual_summary = GroundTruthExpectedSummaryV1(
-            outcome="completed",
-            rejection_stage=None,
+        actual_summary = build_completed_ground_truth_summary_v1(
             replay_summary=replay_summary,
             location_link_write_summary=link_summary,
-            observation_event_count=len(events),
-            observation_location_link_count=len(links),
-            collection_session_count=1,
-            source_membership_count=1,
-            membership_close_count=1,
-            session_close_count=1,
-            route_count=1,
-            analysis_session_count=1,
-            unlinked_observation_count=unlinked_count,
-            route_point_counts=(route.point_count,),
-            route_source_time_bounds_us=(
-                (route.started_source_timestamp_us, route.ended_source_timestamp_us),
-            ),
-            source_to_fix_deltas_us=tuple(
-                link.source_to_fix_delta_us for link in links
-            ),
+            observations=events,
+            location_links=links,
+            collection_sessions=(session,),
+            source_memberships=(membership,),
+            membership_closes=(membership_close,),
+            session_closes=(session_close,),
+            routes=(route,),
+            analysis_sessions=(analysis_session,),
         )
 
         # --- assert exact equality with manifest ---
