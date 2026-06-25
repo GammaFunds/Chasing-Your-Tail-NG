@@ -259,15 +259,15 @@ class KismetEventbusTransportTests(unittest.TestCase):
             ws.sent,
             [
                 json.dumps(
-                    ["SUBSCRIBE", "gamma"],
+                    {"SUBSCRIBE": "gamma"},
                     separators=(",", ":"),
                 ),
                 json.dumps(
-                    ["SUBSCRIBE", "alpha"],
+                    {"SUBSCRIBE": "alpha"},
                     separators=(",", ":"),
                 ),
                 json.dumps(
-                    ["SUBSCRIBE", "beta"],
+                    {"SUBSCRIBE": "beta"},
                     separators=(",", ":"),
                 ),
             ],
@@ -288,7 +288,7 @@ class KismetEventbusTransportTests(unittest.TestCase):
         self.assertTrue(ws.all_sent.wait(timeout=5))
         self.assertEqual(len(ws.sent), 2)
         self.assertIn(
-            json.dumps(["SUBSCRIBE", "topic"], separators=(",", ":")),
+            json.dumps({"SUBSCRIBE": "topic"}, separators=(",", ":")),
             ws.sent,
         )
         transport.stop()
@@ -339,6 +339,37 @@ class KismetEventbusTransportTests(unittest.TestCase):
         self.assertEqual(
             received,
             [{"kismet": {"topic": "test", "data": 123}}],
+        )
+
+    # --------------------------------------------------------------
+    # 5b. Kismet topic-keyed envelope dispatch (proven protocol)
+    # --------------------------------------------------------------
+    def test_dispatches_topic_keyed_envelope(self) -> None:
+        received: list[dict] = []
+        event = threading.Event()
+
+        def handler(msg: dict) -> None:
+            received.append(msg)
+            event.set()
+
+        ws = FakeWebSocket(
+            recv_data=[
+                '{"TIMESTAMP": {"kismet.system.timestamp.sec": 1}}',
+            ],
+        )
+        transport = KismetEventbusTransport(
+            "http://example.com",
+            ("t",),
+            handler,
+            _create_connection=lambda url: ws,
+            _reconnect_waiter=self._noop_waiter,
+        )
+        transport.start()
+        event.wait(timeout=5)
+        transport.stop()
+        self.assertEqual(
+            received,
+            [{"TIMESTAMP": {"kismet.system.timestamp.sec": 1}}],
         )
 
     # --------------------------------------------------------------

@@ -451,7 +451,7 @@ class KismetEventbusTransport:
                 return
 
             frame = json.dumps(
-                ["SUBSCRIBE", topic],
+                {"SUBSCRIBE": topic},
                 separators=(",", ":"),
             )
             try:
