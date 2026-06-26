@@ -14,6 +14,10 @@ import threading
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+from kismet_eventbus_runtime_config import (
+    KismetEventbusTransportConfigV1 as _KismetEventbusTransportConfigV1,
+)
+
 _logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -42,7 +46,8 @@ def _build_ws_url(base_url: str) -> str:
             f"unsupported scheme: {scheme}"
         )
 
-    if not parsed.hostname:
+    host = parsed.hostname
+    if not host:
         raise KismetEventbusError("missing host")
 
     if parsed.username is not None or parsed.password is not None:
@@ -51,9 +56,14 @@ def _build_ws_url(base_url: str) -> str:
         )
 
     ws_scheme = _SCHEME_MAP[scheme]
-    netloc: str = parsed.hostname
+
+    if ":" in host:
+        netloc = f"[{host}]"
+    else:
+        netloc = host
+
     if parsed.port is not None:
-        netloc = f"{parsed.hostname}:{parsed.port}"
+        netloc = f"{netloc}:{parsed.port}"
 
     return f"{ws_scheme}://{netloc}/eventbus/events.ws"
 
@@ -183,6 +193,113 @@ class KismetEventbusTransport:
         self._thread: threading.Thread | None = None
         self._retiring_thread: threading.Thread | None = None
         self._retiring_stop_event: threading.Event | None = None
+
+    # ------------------------------------------------------------------
+    # from_config  (config-based factory)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_config(
+        cls,
+        config: _KismetEventbusTransportConfigV1,
+        handler: Callable[[dict[str, Any]], object],
+        *,
+        _create_connection: Callable[..., Any] | None = None,
+        _reconnect_waiter: (
+            Callable[[threading.Event], None] | None
+        ) = None,
+        _thread_factory: (
+            Callable[..., threading.Thread] | None
+        ) = None,
+        _stop_after_join: (
+            Callable[
+                [threading.Thread, threading.Event],
+                None,
+            ]
+            | None
+        ) = None,
+    ) -> KismetEventbusTransport:
+        if not isinstance(
+            config, _KismetEventbusTransportConfigV1
+        ):
+            raise KismetEventbusError("invalid config type")
+
+        if not callable(handler):
+            raise KismetEventbusError("handler must be callable")
+
+        connect_fn = cls._build_config_create_connection(
+            config,
+            _create_connection,
+        )
+
+        if _reconnect_waiter is not None:
+            reconnect_fn = _reconnect_waiter
+        else:
+            reconnect_delay = config._reconnect_delay_s
+            reconnect_fn = (
+                lambda se: se.wait(
+                    timeout=reconnect_delay,
+                )
+            )
+
+        transport = cls.__new__(cls)
+        KismetEventbusTransport.__init__(
+            transport,
+            config._base_url,
+            config._topics,
+            handler,
+            _create_connection=connect_fn,
+            _reconnect_waiter=reconnect_fn,
+            _thread_factory=_thread_factory,
+            _stop_after_join=_stop_after_join,
+        )
+        transport._STOP_JOIN_TIMEOUT_S = (
+            config._stop_join_timeout_s
+        )
+        return transport
+
+    @staticmethod
+    def _build_config_create_connection(
+        config: _KismetEventbusTransportConfigV1,
+        connector: Callable[..., Any] | None,
+    ) -> Callable[[str], Any]:
+        import ssl
+
+        auth_value = config._authorization_header_value.decode(
+            "ascii"
+        )
+        timeout = config._connect_timeout_s
+        tls_mode = config._tls_mode
+
+        def connect(url: str) -> Any:
+            low_level_connector = connector
+
+            if low_level_connector is None:
+                import websocket
+
+                low_level_connector = (
+                    websocket.create_connection
+                )
+
+            kwargs: dict[str, Any] = {
+                "header": [
+                    f"Authorization: {auth_value}",
+                ],
+                "timeout": timeout,
+            }
+
+            if tls_mode == "verify_required":
+                kwargs["sslopt"] = {
+                    "cert_reqs": ssl.CERT_REQUIRED,
+                    "check_hostname": True,
+                }
+
+            return low_level_connector(
+                url,
+                **kwargs,
+            )
+
+        return connect
 
     # ------------------------------------------------------------------
     # Default factory / waiter  (lazy websocket-client import)

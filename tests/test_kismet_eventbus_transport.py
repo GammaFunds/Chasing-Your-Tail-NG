@@ -8,11 +8,18 @@ have terminated.
 from __future__ import annotations
 
 import ast
+import builtins
 import json
 import logging
+import ssl
 import threading
 import unittest
+from unittest.mock import patch
 
+from kismet_eventbus_runtime_config import (
+    KismetEventbusTransportConfigV1,
+    create_kismet_eventbus_transport_config,
+)
 from kismet_eventbus_transport import (
     KismetEventbusError,
     KismetEventbusTransport,
@@ -1479,6 +1486,570 @@ class KismetEventbusTransportTests(unittest.TestCase):
             new_block.set()
             released.set()
             self._assertJoined(newer_thread)
+
+
+# ------------------------------------------------------------------
+# from_config factory tests
+# ------------------------------------------------------------------
+
+_SYNTHETIC_AUTH = b"Basic dGVzdDp0ZXN0"
+
+
+def _test_config(**overrides: object) -> KismetEventbusTransportConfigV1:
+    kwargs: dict = {
+        "base_url": "https://kismet.example.com",
+        "topics": ("t",),
+        "authorization_header_value": _SYNTHETIC_AUTH,
+        "tls_mode": "verify_required",
+        "connect_timeout_s": 10.0,
+        "reconnect_delay_s": 5.0,
+        "stop_join_timeout_s": 5.0,
+    }
+    kwargs.update(overrides)
+    return create_kismet_eventbus_transport_config(**kwargs)
+
+
+class _RecordingWaitEvent:
+    """Minimal stop-event seam that records wait timeouts."""
+
+    def __init__(self) -> None:
+        self.timeouts: list[float | None] = []
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.timeouts.append(timeout)
+        return False
+
+
+class _RecordingJoinThread:
+    """Non-running thread seam that records join timeouts."""
+
+    def __init__(
+        self,
+        *,
+        target: object,
+        args: tuple[object, ...],
+        daemon: bool,
+    ) -> None:
+        self.target = target
+        self.args = args
+        self.daemon = daemon
+        self.join_timeouts: list[float | None] = []
+        self._alive = False
+
+    def start(self) -> None:
+        self._alive = True
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_timeouts.append(timeout)
+        self._alive = False
+
+
+class KismetEventbusTransportFromConfigTests(unittest.TestCase):
+    """Deterministic config-based transport factory tests."""
+
+    maxDiff = None
+
+    @staticmethod
+    def _noop_waiter(
+        stop_event: threading.Event,
+    ) -> None:
+        return
+
+    @staticmethod
+    def _assert_config_call(
+        call: tuple[str, dict[str, object]],
+        *,
+        expected_url: str,
+        expect_tls: bool,
+    ) -> None:
+        url, kwargs = call
+
+        expected: dict[str, object] = {
+            "header": [
+                "Authorization: Basic dGVzdDp0ZXN0",
+            ],
+            "timeout": 10.0,
+        }
+
+        if expect_tls:
+            expected["sslopt"] = {
+                "cert_reqs": ssl.CERT_REQUIRED,
+                "check_hostname": True,
+            }
+
+        if url != expected_url:
+            raise AssertionError(
+                f"unexpected URL: {url!r}"
+            )
+
+        if kwargs != expected:
+            raise AssertionError(
+                f"unexpected connector kwargs: {kwargs!r}"
+            )
+
+    def test_from_config_construction_is_inactive_and_lazy(
+        self,
+    ) -> None:
+        config = _test_config()
+        real_import = builtins.__import__
+
+        def guarded_import(
+            name: str,
+            globals: object = None,
+            locals: object = None,
+            fromlist: object = (),
+            level: int = 0,
+        ) -> object:
+            if name.split(".")[0] == "websocket":
+                raise AssertionError(
+                    "websocket imported during construction"
+                )
+
+            return real_import(
+                name,
+                globals,
+                locals,
+                fromlist,
+                level,
+            )
+
+        with patch.object(
+            builtins,
+            "__import__",
+            side_effect=guarded_import,
+        ):
+            transport = KismetEventbusTransport.from_config(
+                config,
+                lambda _: None,
+            )
+
+        self.assertIsNone(transport._thread)
+        self.assertIsNone(transport._stop_event)
+        self.assertIsNone(transport._ws)
+        self.assertIsNone(transport._ws_owner)
+
+    def test_explicit_connector_not_called_at_construction(
+        self,
+    ) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def connector(
+            url: str,
+            **kwargs: object,
+        ) -> FakeWebSocket:
+            calls.append((url, dict(kwargs)))
+            return FakeWebSocket()
+
+        transport = KismetEventbusTransport.from_config(
+            _test_config(),
+            lambda _: None,
+            _create_connection=connector,
+        )
+
+        self.assertEqual(calls, [])
+        self.assertIsNone(transport._thread)
+        self.assertIsNone(transport._stop_event)
+        self.assertIsNone(transport._ws)
+
+    def test_from_config_rejects_non_config(self) -> None:
+        for value in ("not a config", 42):
+            with self.subTest(value=value):
+                with self.assertRaises(KismetEventbusError):
+                    KismetEventbusTransport.from_config(
+                        value,  # type: ignore[arg-type]
+                        lambda _: None,
+                    )
+
+    def test_from_config_rejects_non_callable_handler(
+        self,
+    ) -> None:
+        with self.assertRaises(KismetEventbusError):
+            KismetEventbusTransport.from_config(
+                _test_config(),
+                "not callable",  # type: ignore[arg-type]
+            )
+
+    def test_https_connection_arguments(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+        ws = FakeWebSocket(expected_sends=1)
+
+        def connector(
+            url: str,
+            **kwargs: object,
+        ) -> FakeWebSocket:
+            calls.append((url, dict(kwargs)))
+            return ws
+
+        transport = KismetEventbusTransport.from_config(
+            _test_config(
+                base_url=(
+                    "https://kismet.example.com:443"
+                ),
+            ),
+            lambda _: None,
+            _create_connection=connector,
+        )
+
+        transport.start()
+        self.assertTrue(
+            ws.all_sent.wait(timeout=5)
+        )
+        transport.stop()
+
+        self.assertEqual(len(calls), 1)
+
+        self._assert_config_call(
+            calls[0],
+            expected_url=(
+                "wss://kismet.example.com:443"
+                "/eventbus/events.ws"
+            ),
+            expect_tls=True,
+        )
+
+    def test_loopback_plaintext_arguments(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+        ws = FakeWebSocket(expected_sends=1)
+
+        def connector(
+            url: str,
+            **kwargs: object,
+        ) -> FakeWebSocket:
+            calls.append((url, dict(kwargs)))
+            return ws
+
+        transport = KismetEventbusTransport.from_config(
+            _test_config(
+                base_url="http://localhost:8080",
+                tls_mode="loopback_plaintext",
+            ),
+            lambda _: None,
+            _create_connection=connector,
+        )
+
+        transport.start()
+        self.assertTrue(
+            ws.all_sent.wait(timeout=5)
+        )
+        transport.stop()
+
+        self.assertEqual(len(calls), 1)
+
+        self._assert_config_call(
+            calls[0],
+            expected_url=(
+                "ws://localhost:8080"
+                "/eventbus/events.ws"
+            ),
+            expect_tls=False,
+        )
+
+        self.assertNotIn(
+            "sslopt",
+            calls[0][1],
+        )
+
+    def test_ipv6_ws_url_preserves_brackets(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+        ws = FakeWebSocket(expected_sends=1)
+
+        def connector(
+            url: str,
+            **kwargs: object,
+        ) -> FakeWebSocket:
+            calls.append((url, dict(kwargs)))
+            return ws
+
+        transport = KismetEventbusTransport.from_config(
+            _test_config(
+                base_url="http://[::1]:2501",
+                tls_mode="loopback_plaintext",
+            ),
+            lambda _: None,
+            _create_connection=connector,
+        )
+
+        transport.start()
+        self.assertTrue(
+            ws.all_sent.wait(timeout=5)
+        )
+        transport.stop()
+
+        self.assertEqual(len(calls), 1)
+
+        self._assert_config_call(
+            calls[0],
+            expected_url=(
+                "ws://[::1]:2501"
+                "/eventbus/events.ws"
+            ),
+            expect_tls=False,
+        )
+
+    def test_reconnect_reuses_all_config_options(
+        self,
+    ) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+        waiter_entered = threading.Event()
+        release_reconnect = threading.Event()
+        second_ws = FakeWebSocket(expected_sends=1)
+
+        def connector(
+            url: str,
+            **kwargs: object,
+        ) -> FakeWebSocket:
+            calls.append((url, dict(kwargs)))
+
+            if len(calls) == 1:
+                return FakeWebSocket(
+                    close_immediately=True,
+                )
+
+            if len(calls) == 2:
+                return second_ws
+
+            raise AssertionError(
+                "unexpected third connector call"
+            )
+
+        def controlled_waiter(
+            stop_event: threading.Event,
+        ) -> None:
+            waiter_entered.set()
+            release_reconnect.wait(timeout=5)
+
+        transport = KismetEventbusTransport.from_config(
+            _test_config(),
+            lambda _: None,
+            _create_connection=connector,
+            _reconnect_waiter=controlled_waiter,
+        )
+
+        transport.start()
+
+        self.assertTrue(
+            waiter_entered.wait(timeout=5)
+        )
+
+        release_reconnect.set()
+
+        self.assertTrue(
+            second_ws.all_sent.wait(timeout=5)
+        )
+
+        transport.stop()
+
+        self.assertEqual(len(calls), 2)
+
+        for call in calls:
+            self._assert_config_call(
+                call,
+                expected_url=(
+                    "wss://kismet.example.com"
+                    "/eventbus/events.ws"
+                ),
+                expect_tls=True,
+            )
+
+        self.assertEqual(
+            calls[0],
+            calls[1],
+        )
+
+    def test_default_reconnect_waiter_uses_config_delay(
+        self,
+    ) -> None:
+        transport = KismetEventbusTransport.from_config(
+            _test_config(reconnect_delay_s=42.25),
+            lambda _: None,
+            _create_connection=(
+                lambda url, **kwargs: FakeWebSocket()
+            ),
+        )
+
+        event = _RecordingWaitEvent()
+
+        transport._reconnect_waiter(
+            event,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(
+            event.timeouts,
+            [42.25],
+        )
+
+    def test_stop_join_uses_config_timeout(self) -> None:
+        created: list[_RecordingJoinThread] = []
+
+        def thread_factory(
+            **kwargs: object,
+        ) -> _RecordingJoinThread:
+            thread = _RecordingJoinThread(
+                target=kwargs["target"],
+                args=kwargs["args"],  # type: ignore[arg-type]
+                daemon=kwargs["daemon"],  # type: ignore[arg-type]
+            )
+            created.append(thread)
+            return thread
+
+        transport = KismetEventbusTransport.from_config(
+            _test_config(
+                stop_join_timeout_s=0.125,
+            ),
+            lambda _: None,
+            _create_connection=(
+                lambda url, **kwargs: FakeWebSocket()
+            ),
+            _thread_factory=(
+                thread_factory  # type: ignore[arg-type]
+            ),
+        )
+
+        transport.start()
+        transport.stop()
+
+        self.assertEqual(len(created), 1)
+        self.assertEqual(
+            created[0].join_timeouts,
+            [0.125],
+        )
+        self.assertIsNone(transport._thread)
+
+    def test_connection_failure_log_is_content_free(
+        self,
+    ) -> None:
+        secret = _SYNTHETIC_AUTH.decode("ascii")
+        waiter_entered = threading.Event()
+        attempts: list[int] = []
+
+        def failing_connector(
+            url: str,
+            **kwargs: object,
+        ) -> object:
+            attempts.append(1)
+            raise ConnectionError(
+                f"synthetic connector failure {secret}"
+            )
+
+        def blocking_waiter(
+            stop_event: threading.Event,
+        ) -> None:
+            waiter_entered.set()
+            stop_event.wait()
+
+        transport = KismetEventbusTransport.from_config(
+            _test_config(),
+            lambda _: None,
+            _create_connection=failing_connector,
+            _reconnect_waiter=blocking_waiter,
+        )
+
+        with self.assertLogs(
+            "kismet_eventbus_transport",
+            level="DEBUG",
+        ) as captured:
+            transport.start()
+
+            self.assertTrue(
+                waiter_entered.wait(timeout=5)
+            )
+
+            transport.stop()
+
+        output = "\n".join(captured.output)
+
+        self.assertEqual(attempts, [1])
+        self.assertIn(
+            "connection attempt failed",
+            output,
+        )
+        self.assertNotIn(secret, output)
+        self.assertNotIn(
+            "synthetic connector failure",
+            output,
+        )
+
+    def test_direct_constructor_keeps_one_argument_connector(
+        self,
+    ) -> None:
+        urls: list[str] = []
+        ws = FakeWebSocket(expected_sends=1)
+
+        def direct_connector(
+            url: str,
+        ) -> FakeWebSocket:
+            urls.append(url)
+            return ws
+
+        transport = KismetEventbusTransport(
+            "http://example.com",
+            ("t",),
+            lambda _: None,
+            _create_connection=direct_connector,
+            _reconnect_waiter=self._noop_waiter,
+        )
+
+        transport.start()
+
+        self.assertTrue(
+            ws.all_sent.wait(timeout=5)
+        )
+
+        transport.stop()
+
+        self.assertEqual(
+            urls,
+            [
+                "ws://example.com/eventbus/events.ws",
+            ],
+        )
+
+        self.assertEqual(
+            transport._STOP_JOIN_TIMEOUT_S,
+            KismetEventbusTransport._STOP_JOIN_TIMEOUT_S,
+        )
+
+    def test_subscription_frames_match_legacy(
+        self,
+    ) -> None:
+        ws = FakeWebSocket(expected_sends=2)
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def connector(
+            url: str,
+            **kwargs: object,
+        ) -> FakeWebSocket:
+            calls.append((url, dict(kwargs)))
+            return ws
+
+        transport = KismetEventbusTransport.from_config(
+            _test_config(
+                topics=("alpha", "beta"),
+            ),
+            lambda _: None,
+            _create_connection=connector,
+        )
+
+        transport.start()
+
+        self.assertTrue(
+            ws.all_sent.wait(timeout=5)
+        )
+
+        transport.stop()
+
+        self.assertEqual(
+            ws.sent,
+            [
+                '{"SUBSCRIBE":"alpha"}',
+                '{"SUBSCRIBE":"beta"}',
+            ],
+        )
+
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":
