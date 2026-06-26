@@ -476,6 +476,151 @@ class BaselineStore:
             )
         )
 
+    # ── Bundle method ─────────────────────────────────────────────────────
+
+    def insert_baseline_bundle(
+        self,
+        manifest: BaselineManifestV1,
+        result: BaselineResultV1,
+    ) -> str:
+        self._ensure_open()
+        if type(manifest) is not BaselineManifestV1:
+            raise ValueError("manifest must be BaselineManifestV1")
+        if type(result) is not BaselineResultV1:
+            raise ValueError("result must be BaselineResultV1")
+
+        with self._write_transaction():
+            existing_manifest_row = self._fetch_manifest_row(
+                manifest.baseline_manifest_id
+            )
+
+            manifest_present = existing_manifest_row is not None
+            if manifest_present:
+                existing_manifest = self._manifest_from_row(
+                    existing_manifest_row
+                )
+                manifest_result = compare_baseline_manifest_source_facts(
+                    existing_manifest,
+                    manifest,
+                )
+                if manifest_result == "identity_conflict":
+                    return "identity_conflict"
+                authoritative_manifest = existing_manifest
+            else:
+                authoritative_manifest = manifest
+
+            self._validate_result_against_manifest(
+                result,
+                authoritative_manifest,
+            )
+
+            existing_result_row = self._fetch_result_row(
+                result.baseline_result_id
+            )
+            if existing_result_row is not None:
+                existing_result = self._result_from_row(
+                    existing_result_row
+                )
+                result_comparison = compare_baseline_result_source_facts(
+                    existing_result,
+                    result,
+                )
+                if result_comparison == "identity_conflict":
+                    return "identity_conflict"
+                existing_for_manifest = (
+                    self._fetch_result_row_for_manifest(
+                        result.manifest_id
+                    )
+                )
+                if (
+                    existing_for_manifest is not None
+                    and existing_for_manifest["baseline_result_id"]
+                    != result.baseline_result_id
+                ):
+                    return "identity_conflict"
+                return "duplicate"
+
+            existing_for_manifest = (
+                self._fetch_result_row_for_manifest(
+                    result.manifest_id
+                )
+            )
+            if existing_for_manifest is not None:
+                return "identity_conflict"
+
+            if not manifest_present:
+                self._connection.execute(
+                    f"""
+                    INSERT INTO {_MANIFESTS_TABLE} (
+                        baseline_manifest_id,
+                        schema_version,
+                        record_kind,
+                        baseline_manifest_digest,
+                        analysis_type,
+                        analysis_version,
+                        baseline_method,
+                        baseline_version,
+                        subject_kind,
+                        subject_reference,
+                        window_start_source_timestamp_us,
+                        window_end_source_timestamp_us,
+                        time_basis,
+                        boundary_policy,
+                        input_reference_digests,
+                        sample_count,
+                        minimum_sample_count,
+                        baseline_status,
+                        status_reason_code,
+                        created_ingest_timestamp_us,
+                        analyzer_name,
+                        analyzer_version,
+                        analysis_mode,
+                        source_contract_version
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    self._manifest_insert_values(manifest),
+                )
+
+            self._connection.execute(
+                f"""
+                INSERT INTO {_RESULTS_TABLE} (
+                    baseline_result_id,
+                    schema_version,
+                    record_kind,
+                    baseline_result_digest,
+                    analysis_type,
+                    analysis_version,
+                    baseline_method,
+                    baseline_version,
+                    manifest_id,
+                    manifest_digest,
+                    samples,
+                    sample_count,
+                    minimum_sample_count,
+                    baseline_status,
+                    status_reason_code,
+                    minimum_count,
+                    maximum_count,
+                    count_mean_numerator,
+                    count_mean_denominator,
+                    created_ingest_timestamp_us,
+                    analyzer_name,
+                    analyzer_version,
+                    analysis_mode,
+                    source_contract_version
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                self._result_insert_values(result),
+            )
+
+            return "inserted"
+
     # ── Internal: connection management ───────────────────────────────────
 
     def _open(self) -> None:

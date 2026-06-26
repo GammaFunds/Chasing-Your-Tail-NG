@@ -1996,6 +1996,769 @@ class BaselineStoreTests(unittest.TestCase):
             )
 
 
+# ── Bundle method tests ─────────────────────────────────────────────────────
+
+
+class BaselineStoreBundleTests(unittest.TestCase):
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tempdir.name) / "bundle.sqlite"
+        self.store = BaselineStore(self.path)
+
+    def tearDown(self):
+        try:
+            self.store.close()
+        except Exception:
+            pass
+        self.tempdir.cleanup()
+
+    @staticmethod
+    def _bundle_manifest():
+        return make_manifest(
+            input_reference_digests=(HEX_A, HEX_B),
+            minimum_sample_count=2,
+        )
+
+    @staticmethod
+    def _bundle_result(manifest):
+        return make_result(manifest=manifest)
+
+    # 1. Clean atomic insertion
+
+    def test_clean_atomic_insertion(self):
+        manifest = self._bundle_manifest()
+        result = self._bundle_result(manifest)
+        ret = self.store.insert_baseline_bundle(manifest, result)
+        self.assertEqual(ret, "inserted")
+        self.assertEqual(
+            self.store.get_baseline_manifest(
+                manifest.baseline_manifest_id
+            ),
+            manifest,
+        )
+        self.assertEqual(
+            self.store.get_baseline_result(result.baseline_result_id),
+            result,
+        )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            reopened.get_baseline_manifest(
+                manifest.baseline_manifest_id
+            ),
+            manifest,
+        )
+        self.assertEqual(
+            reopened.get_baseline_result(result.baseline_result_id),
+            result,
+        )
+
+    # 2. Complete duplicate replay
+
+    def test_complete_duplicate_replay(self):
+        manifest = self._bundle_manifest()
+        result = self._bundle_result(manifest)
+        self.assertEqual(
+            self.store.insert_baseline_bundle(manifest, result),
+            "inserted",
+        )
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            before_manifests = connection.execute(
+                "SELECT COUNT(*) FROM baseline_manifests"
+            ).fetchone()[0]
+            before_results = connection.execute(
+                "SELECT COUNT(*) FROM baseline_results"
+            ).fetchone()[0]
+        ret = self.store.insert_baseline_bundle(manifest, result)
+        self.assertEqual(ret, "duplicate")
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            after_manifests = connection.execute(
+                "SELECT COUNT(*) FROM baseline_manifests"
+            ).fetchone()[0]
+            after_results = connection.execute(
+                "SELECT COUNT(*) FROM baseline_results"
+            ).fetchone()[0]
+        self.assertEqual(after_manifests, before_manifests)
+        self.assertEqual(after_results, before_results)
+        stored = self.store.get_baseline_manifest(
+            manifest.baseline_manifest_id
+        )
+        self.assertEqual(stored, manifest)
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            reopened.get_baseline_manifest(
+                manifest.baseline_manifest_id
+            ),
+            manifest,
+        )
+        self.assertEqual(
+            reopened.get_baseline_result(result.baseline_result_id),
+            result,
+        )
+
+    # 3. Existing duplicate manifest, absent result
+
+    def test_existing_duplicate_manifest_absent_result(self):
+        manifest = self._bundle_manifest()
+        result = self._bundle_result(manifest)
+        self.assertEqual(
+            self.store.insert_baseline_manifest(manifest),
+            "inserted",
+        )
+        ret = self.store.insert_baseline_bundle(manifest, result)
+        self.assertEqual(ret, "inserted")
+        self.assertEqual(
+            self.store.get_baseline_manifest(
+                manifest.baseline_manifest_id
+            ),
+            manifest,
+        )
+        self.assertEqual(
+            self.store.get_baseline_result(result.baseline_result_id),
+            result,
+        )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            reopened.get_baseline_manifest(
+                manifest.baseline_manifest_id
+            ),
+            manifest,
+        )
+        self.assertEqual(
+            reopened.get_baseline_result(result.baseline_result_id),
+            result,
+        )
+
+    # 4. Manifest identity conflict
+
+    def test_manifest_identity_conflict(self):
+        manifest = self._bundle_manifest()
+        self.assertEqual(
+            self.store.insert_baseline_manifest(manifest),
+            "inserted",
+        )
+        conflict = BaselineManifestV1(
+            schema_version=manifest.schema_version,
+            record_kind=manifest.record_kind,
+            baseline_manifest_id=manifest.baseline_manifest_id,
+            baseline_manifest_digest=(
+                manifest.baseline_manifest_digest
+            ),
+            analysis_type="different.type",
+            analysis_version=manifest.analysis_version,
+            baseline_method=manifest.baseline_method,
+            baseline_version=manifest.baseline_version,
+            subject_kind=manifest.subject_kind,
+            subject_reference=manifest.subject_reference,
+            window_start_source_timestamp_us=(
+                manifest.window_start_source_timestamp_us
+            ),
+            window_end_source_timestamp_us=(
+                manifest.window_end_source_timestamp_us
+            ),
+            time_basis=manifest.time_basis,
+            boundary_policy=manifest.boundary_policy,
+            input_reference_digests=(
+                manifest.input_reference_digests
+            ),
+            sample_count=manifest.sample_count,
+            minimum_sample_count=manifest.minimum_sample_count,
+            baseline_status=manifest.baseline_status,
+            status_reason_code=manifest.status_reason_code,
+            created_ingest_timestamp_us=(
+                manifest.created_ingest_timestamp_us
+            ),
+            provenance=manifest.provenance,
+        )
+        conflict_result = self._bundle_result(manifest)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            before_manifests = connection.execute(
+                "SELECT COUNT(*) FROM baseline_manifests"
+            ).fetchone()[0]
+            before_results = connection.execute(
+                "SELECT COUNT(*) FROM baseline_results"
+            ).fetchone()[0]
+        ret = self.store.insert_baseline_bundle(
+            conflict,
+            conflict_result,
+        )
+        self.assertEqual(ret, "identity_conflict")
+        self.assertEqual(
+            self.store.get_baseline_manifest(
+                manifest.baseline_manifest_id
+            ),
+            manifest,
+        )
+        self.assertIsNone(
+            self.store.get_baseline_result(
+                conflict_result.baseline_result_id
+            ),
+        )
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                before_manifests,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                before_results,
+            )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            reopened.get_baseline_manifest(
+                manifest.baseline_manifest_id
+            ),
+            manifest,
+        )
+        self.assertIsNone(
+            reopened.get_baseline_result(
+                conflict_result.baseline_result_id
+            ),
+        )
+
+    # 5. Result identity conflict with same result ID
+
+    def test_result_identity_conflict_same_id(self):
+        manifest = self._bundle_manifest()
+        result = self._bundle_result(manifest)
+        self.assertEqual(
+            self.store.insert_baseline_bundle(manifest, result),
+            "inserted",
+        )
+        corrupted = copy.copy(result)
+        object.__setattr__(
+            corrupted,
+            "samples",
+            (
+                BaselineCountSampleV1(
+                    input_reference_digest=HEX_A,
+                    observation_count=99,
+                ),
+                BaselineCountSampleV1(
+                    input_reference_digest=HEX_B,
+                    observation_count=99,
+                ),
+            ),
+        )
+        object.__setattr__(corrupted, "sample_count", 2)
+        object.__setattr__(corrupted, "minimum_count", 99)
+        object.__setattr__(corrupted, "maximum_count", 99)
+        object.__setattr__(corrupted, "count_mean_numerator", 198)
+        object.__setattr__(corrupted, "count_mean_denominator", 2)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            before_manifests = connection.execute(
+                "SELECT COUNT(*) FROM baseline_manifests"
+            ).fetchone()[0]
+            before_results = connection.execute(
+                "SELECT COUNT(*) FROM baseline_results"
+            ).fetchone()[0]
+        ret = self.store.insert_baseline_bundle(
+            manifest,
+            corrupted,
+        )
+        self.assertEqual(ret, "identity_conflict")
+        self.assertEqual(
+            self.store.get_baseline_result(result.baseline_result_id),
+            result,
+        )
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                before_manifests,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                before_results,
+            )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            reopened.get_baseline_result(result.baseline_result_id),
+            result,
+        )
+
+    # 6. Different result ID for same manifest
+
+    def test_different_result_id_for_same_manifest(self):
+        manifest = self._bundle_manifest()
+        result = self._bundle_result(manifest)
+        self.assertEqual(
+            self.store.insert_baseline_bundle(manifest, result),
+            "inserted",
+        )
+        second = copy.copy(result)
+        object.__setattr__(
+            second,
+            "baseline_result_id",
+            "blr_v1_" + ("f" * 64),
+        )
+        object.__setattr__(
+            second,
+            "baseline_result_digest",
+            "f" * 64,
+        )
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            before_manifests = connection.execute(
+                "SELECT COUNT(*) FROM baseline_manifests"
+            ).fetchone()[0]
+            before_results = connection.execute(
+                "SELECT COUNT(*) FROM baseline_results"
+            ).fetchone()[0]
+        ret = self.store.insert_baseline_bundle(
+            manifest,
+            second,
+        )
+        self.assertEqual(ret, "identity_conflict")
+        self.assertEqual(
+            self.store.get_baseline_result(result.baseline_result_id),
+            result,
+        )
+        self.assertIsNone(
+            self.store.get_baseline_result("blr_v1_" + ("f" * 64)),
+        )
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                before_manifests,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                before_results,
+            )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            reopened.get_baseline_result(result.baseline_result_id),
+            result,
+        )
+        self.assertIsNone(
+            reopened.get_baseline_result("blr_v1_" + ("f" * 64)),
+        )
+
+    # 7. Validation failure rolls back new manifest
+
+    def test_validation_failure_rolls_back_new_manifest(self):
+        manifest = self._bundle_manifest()
+        result = self._bundle_result(manifest)
+        corrupted = copy.copy(result)
+        object.__setattr__(
+            corrupted,
+            "manifest_id",
+            "blm_v1_" + ("0" * 64),
+        )
+        object.__setattr__(
+            corrupted,
+            "manifest_digest",
+            "0" * 64,
+        )
+        with self.assertRaises(ValueError):
+            self.store.insert_baseline_bundle(manifest, corrupted)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+        self.assertIsNone(
+            self.store.get_baseline_manifest(
+                manifest.baseline_manifest_id
+            ),
+        )
+        self.assertIsNone(
+            self.store.get_baseline_result(
+                result.baseline_result_id
+            ),
+        )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+
+    # 8. SQLite failure after manifest INSERT rolls back both
+
+    def test_sqlite_failure_rolls_back_both(self):
+        manifest = self._bundle_manifest()
+        result = self._bundle_result(manifest)
+        self.store._connection.execute(
+            """
+            CREATE TEMP TRIGGER force_baseline_result_insert_failure
+            BEFORE INSERT ON main.baseline_results
+            BEGIN
+                SELECT RAISE(ABORT,
+                    'forced baseline result insert failure');
+            END;
+            """
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.insert_baseline_bundle(manifest, result)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+        self.assertIsNone(
+            self.store.get_baseline_manifest(
+                manifest.baseline_manifest_id
+            ),
+        )
+        self.assertIsNone(
+            self.store.get_baseline_result(
+                result.baseline_result_id
+            ),
+        )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+
+    # 9. Use after close
+
+    def test_bundle_use_after_close(self):
+        manifest = self._bundle_manifest()
+        result = self._bundle_result(manifest)
+        self.store.insert_baseline_bundle(manifest, result)
+        self.store.close()
+        other = make_manifest(hmac_key=HMAC_KEY_B)
+        other_result = make_result(
+            hmac_key=HMAC_KEY_B,
+            manifest=other,
+        )
+        with self.assertRaises(RuntimeError) as ctx:
+            self.store.insert_baseline_bundle(other, other_result)
+        self.assertEqual(
+            str(ctx.exception),
+            "BaselineStore is closed",
+        )
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            reopened.get_baseline_manifest(
+                manifest.baseline_manifest_id
+            ),
+            manifest,
+        )
+        self.assertEqual(
+            reopened.get_baseline_result(result.baseline_result_id),
+            result,
+        )
+
+    # 10. Exact-type rejection
+
+    def test_bundle_rejects_invalid_manifest_type(self):
+        fake = types.SimpleNamespace(
+            baseline_manifest_id="blm_v1_" + ("0" * 64),
+        )
+        result = self._bundle_result(self._bundle_manifest())
+        with self.assertRaises(ValueError):
+            self.store.insert_baseline_bundle(fake, result)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_bundle_rejects_manifest_subclass(self):
+        class MyManifest(BaselineManifestV1):
+            pass
+
+        manifest = self._bundle_manifest()
+        subclass = MyManifest(**manifest.__dict__)
+        result = self._bundle_result(manifest)
+        with self.assertRaises(ValueError):
+            self.store.insert_baseline_bundle(subclass, result)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_bundle_rejects_invalid_result_type(self):
+        manifest = self._bundle_manifest()
+        fake = types.SimpleNamespace(
+            baseline_result_id="blr_v1_" + ("0" * 64),
+        )
+        with self.assertRaises(ValueError):
+            self.store.insert_baseline_bundle(manifest, fake)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_bundle_rejects_result_subclass(self):
+        class MyResult(BaselineResultV1):
+            pass
+
+        manifest = self._bundle_manifest()
+        result = self._bundle_result(manifest)
+        subclass = MyResult(**result.__dict__)
+        with self.assertRaises(ValueError):
+            self.store.insert_baseline_bundle(manifest, subclass)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+        self.store.close()
+        reopened = BaselineStore(self.path)
+        self.addCleanup(reopened.close)
+        with closing(
+            sqlite3.connect(self.path)
+        ) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_manifests"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM baseline_results"
+                ).fetchone()[0],
+                0,
+            )
+
+    # 11. Deterministic ordering
+
+    def test_bundle_deterministic_ordering_reverse_insertion(self):
+        store = BaselineStore(
+            Path(self.tempdir.name) / "ordering.sqlite"
+        )
+        self.addCleanup(store.close)
+
+        large = 2**63 + 1000
+
+        m_small = make_manifest(
+            window_start=9,
+            window_end=10,
+            input_reference_digests=(HEX_A,),
+            minimum_sample_count=1,
+        )
+        m_ten = make_manifest(
+            window_start=10,
+            window_end=11,
+            input_reference_digests=(HEX_B,),
+            minimum_sample_count=1,
+        )
+        m_large = make_manifest(
+            window_start=large,
+            window_end=large + 1,
+            input_reference_digests=(HEX_C,),
+            minimum_sample_count=1,
+        )
+
+        r_small = make_result(manifest=m_small)
+        r_ten = make_result(manifest=m_ten)
+        r_large = make_result(manifest=m_large)
+
+        for m, r in (
+            (m_large, r_large),
+            (m_ten, r_ten),
+            (m_small, r_small),
+        ):
+            self.assertEqual(
+                store.insert_baseline_bundle(m, r),
+                "inserted",
+            )
+
+        expected_manifests = (m_small, m_ten, m_large)
+        self.assertEqual(
+            store.list_baseline_manifests(),
+            expected_manifests,
+        )
+        expected_results = (r_small, r_ten, r_large)
+        self.assertEqual(
+            store.list_baseline_results(),
+            expected_results,
+        )
+
+    # 12. Existing invariants remain intact
+
+    def test_bundle_all_unchanged(self):
+        self.assertEqual(STORE_ALL, ["BaselineStore"])
+        with self.assertRaises(AttributeError):
+            _ = self.store.connection
+
+
 # ── AST prohibitions ─────────────────────────────────────────────────────
 
 
