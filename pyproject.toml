@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chasing-your-tail-ng"
+version = "0.1.0"
+description = "Bounded Kismet eventbus runtime for Chasing Your Tail NG"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "websocket-client>=1.8",
+]
+
+[tool.setuptools]
+py-modules = [
+    "kismet_eventbus_deployment",
+    "kismet_eventbus_new_device_adapter",
+    "kismet_eventbus_observation_handler",
+    "kismet_eventbus_runtime",
+    "kismet_eventbus_runtime_config",
+    "kismet_eventbus_transport",
+    "observation_contract",
+    "observation_store",
+]
