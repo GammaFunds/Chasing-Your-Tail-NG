@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import inspect
 import json
 import logging
 import ssl
@@ -23,6 +24,7 @@ from kismet_eventbus_runtime_config import (
 from kismet_eventbus_transport import (
     KismetEventbusError,
     KismetEventbusTransport,
+    KismetEventbusTransportStatusV1,
 )
 
 
@@ -177,6 +179,99 @@ class KismetEventbusTransportTests(unittest.TestCase):
                     break
 
         self.assertTrue(found_lazy, "no lazy websocket import found")
+
+    def test_public_surface_and_status_signature(self) -> None:
+        self.assertEqual(
+            __import__("kismet_eventbus_transport").__all__,
+            [
+                "KismetEventbusError",
+                "KismetEventbusTransport",
+                "KismetEventbusTransportStatusV1",
+            ],
+        )
+        self.assertIsInstance(
+            KismetEventbusTransport.status,
+            property,
+        )
+        self.assertEqual(
+            tuple(
+                inspect.signature(
+                    KismetEventbusTransport.status.fget
+                ).parameters
+            ),
+            ("self",),
+        )
+
+    def test_transport_status_dataclass_contract(self) -> None:
+        self.assertEqual(
+            tuple(KismetEventbusTransportStatusV1.__dataclass_fields__),
+            ("worker_lifecycle", "stop_requested"),
+        )
+
+        status = KismetEventbusTransportStatusV1(
+            worker_lifecycle="running",
+            stop_requested=True,
+        )
+
+        self.assertEqual(
+            status,
+            KismetEventbusTransportStatusV1(
+                worker_lifecycle="running",
+                stop_requested=True,
+            ),
+        )
+        self.assertFalse(hasattr(status, "__dict__"))
+        self.assertEqual(repr(status), "KismetEventbusTransportStatusV1()")
+        self.assertEqual(str(status), "KismetEventbusTransportStatusV1()")
+        self.assertIsNot(
+            status,
+            KismetEventbusTransportStatusV1(
+                worker_lifecycle="running",
+                stop_requested=True,
+            ),
+        )
+
+        with self.assertRaises(Exception):
+            status.worker_lifecycle = "stopped"  # type: ignore[misc]
+
+        invalid_cases = (
+            (
+                {
+                    "worker_lifecycle": "invalid",
+                    "stop_requested": False,
+                },
+                "worker_lifecycle",
+            ),
+            (
+                {
+                    "worker_lifecycle": 1,
+                    "stop_requested": False,
+                },
+                "worker_lifecycle",
+            ),
+            (
+                {
+                    "worker_lifecycle": "running",
+                    "stop_requested": 1,
+                },
+                "stop_requested",
+            ),
+        )
+
+        for kwargs, expected_field in invalid_cases:
+            with self.subTest(
+                kwargs=kwargs,
+                expected_field=expected_field,
+            ):
+                with self.assertRaises(ValueError) as ctx:
+                    KismetEventbusTransportStatusV1(
+                        **kwargs,  # type: ignore[arg-type]
+                    )
+
+                self.assertEqual(
+                    str(ctx.exception),
+                    expected_field,
+                )
 
     # --------------------------------------------------------------
     # 2. HTTP and HTTPS URL conversion
@@ -578,6 +673,194 @@ class KismetEventbusTransportTests(unittest.TestCase):
         transport.stop()
         transport.stop()  # second call also safe
 
+    def test_status_is_stopped_before_start(self) -> None:
+        transport = KismetEventbusTransport(
+            "http://example.com",
+            ("t",),
+            lambda _: None,
+            _create_connection=self._fake_connect,
+            _reconnect_waiter=self._noop_waiter,
+        )
+
+        status = transport.status
+        self.assertEqual(
+            status,
+            KismetEventbusTransportStatusV1(
+                worker_lifecycle="stopped",
+                stop_requested=False,
+            ),
+        )
+        self.assertIsNot(status, transport.status)
+        self.assertFalse(hasattr(status, "__dict__"))
+        self.assertEqual(repr(status), "KismetEventbusTransportStatusV1()")
+
+    def test_status_reports_running_while_worker_alive(self) -> None:
+        ws = FakeWebSocket(expected_sends=1)
+        transport = KismetEventbusTransport(
+            "http://example.com",
+            ("t",),
+            lambda _: None,
+            _create_connection=lambda url: ws,
+            _reconnect_waiter=self._noop_waiter,
+        )
+
+        transport.start()
+        self.assertTrue(ws.all_sent.wait(timeout=5))
+
+        status = transport.status
+        self.assertEqual(
+            status,
+            KismetEventbusTransportStatusV1(
+                worker_lifecycle="running",
+                stop_requested=False,
+            ),
+        )
+        self.assertIsNot(status, transport.status)
+        transport.stop()
+
+    def test_status_reports_retiring_while_tail_alive(self) -> None:
+        target_returned = threading.Event()
+        release_tail = threading.Event()
+
+        def handler(msg: dict) -> None:
+            transport.stop()
+
+        def factory(**kwargs: object) -> threading.Thread:
+            return _TailBlockingThread(
+                target_returned=target_returned,
+                release_thread_tail=release_tail,
+                **kwargs,
+            )
+
+        transport = KismetEventbusTransport(
+            "http://example.com",
+            ("t",),
+            handler,
+            _create_connection=lambda url: FakeWebSocket(
+                recv_data=['{"x":1}'],
+            ),
+            _reconnect_waiter=self._noop_waiter,
+            _thread_factory=factory,
+        )
+
+        transport.start()
+
+        try:
+            self.assertTrue(
+                target_returned.wait(timeout=5)
+            )
+
+            status = transport.status
+
+            self.assertEqual(
+                status,
+                KismetEventbusTransportStatusV1(
+                    worker_lifecycle="retiring",
+                    stop_requested=True,
+                ),
+            )
+            self.assertIsNot(status, transport.status)
+            self.assertIsNone(transport._thread)
+            self.assertIsNotNone(
+                transport._retiring_thread
+            )
+        finally:
+            release_tail.set()
+            transport.stop()
+
+    def test_status_stop_requested_tracks_matching_generation(self) -> None:
+        target_returned = threading.Event()
+        release_tail = threading.Event()
+        stop_entered = threading.Event()
+        stop_finished = threading.Event()
+
+        def factory(**kwargs: object) -> threading.Thread:
+            return _TailBlockingThread(
+                target_returned=target_returned,
+                release_thread_tail=release_tail,
+                **kwargs,
+            )
+
+        transport = KismetEventbusTransport(
+            "http://example.com",
+            ("t",),
+            lambda _: None,
+            _create_connection=lambda url: FakeWebSocket(
+                close_immediately=True,
+            ),
+            _reconnect_waiter=self._noop_waiter,
+            _thread_factory=factory,
+        )
+
+        def do_stop() -> None:
+            stop_entered.set()
+
+            try:
+                transport.stop()
+            finally:
+                stop_finished.set()
+
+        stopper = threading.Thread(
+            target=do_stop,
+            daemon=True,
+            name="status-tail-stop",
+        )
+
+        transport.start()
+
+        try:
+            stopper.start()
+
+            self.assertTrue(
+                stop_entered.wait(timeout=5)
+            )
+            self.assertTrue(
+                target_returned.wait(timeout=5)
+            )
+            self.assertFalse(
+                stop_finished.is_set()
+            )
+
+            status = transport.status
+
+            self.assertEqual(
+                status,
+                KismetEventbusTransportStatusV1(
+                    worker_lifecycle="retiring",
+                    stop_requested=True,
+                ),
+            )
+            self.assertIsNot(status, transport.status)
+        finally:
+            release_tail.set()
+            self._assertJoined(stopper)
+
+        self.assertTrue(
+            stop_finished.is_set()
+        )
+
+    def test_status_read_is_ownership_preserving(self) -> None:
+        ws = FakeWebSocket(expected_sends=1)
+        transport = KismetEventbusTransport(
+            "http://example.com",
+            ("t",),
+            lambda _: None,
+            _create_connection=lambda url: ws,
+            _reconnect_waiter=self._noop_waiter,
+        )
+
+        transport.start()
+        self.assertTrue(ws.all_sent.wait(timeout=5))
+        thread_before = transport._thread
+        owner_before = transport._ws_owner
+
+        status = transport.status
+        self.assertEqual(status.worker_lifecycle, "running")
+        self.assertIs(transport._thread, thread_before)
+        self.assertIs(transport._ws_owner, owner_before)
+
+        transport.stop()
+
     # --------------------------------------------------------------
     # 13. stop() closes the current socket and leaves the client
     #     stopped
@@ -671,6 +954,24 @@ class KismetEventbusTransportTests(unittest.TestCase):
         self.assertNotIn("Authorization", all_output)
         self.assertNotIn("payload-data", all_output)
         self.assertNotIn("handler error", all_output)
+
+    def test_status_representation_is_content_free(self) -> None:
+        transport = KismetEventbusTransport(
+            "https://example.com",
+            ("topic-a", "topic-b"),
+            lambda _: None,
+            _create_connection=self._fake_connect,
+            _reconnect_waiter=self._noop_waiter,
+        )
+        status = transport.status
+        output = "\n".join((repr(status), str(status)))
+        for value in (
+            "example.com",
+            "topic-a",
+            "topic-b",
+        ):
+            with self.subTest(value=value):
+                self.assertNotIn(value, output)
 
     # --------------------------------------------------------------
     # 16. Static import checks prove no forbidden

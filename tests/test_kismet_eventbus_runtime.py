@@ -18,12 +18,14 @@ from unittest.mock import patch
 import kismet_eventbus_runtime as runtime_module
 from kismet_eventbus_runtime import (
     KismetEventbusRuntime,
+    KismetEventbusRuntimeHealthV1,
     KismetEventbusRuntimeStatusV1,
 )
 from kismet_eventbus_runtime_config import (
     KismetEventbusTransportConfigV1,
     create_kismet_eventbus_transport_config,
 )
+from kismet_eventbus_transport import KismetEventbusTransportStatusV1
 
 
 _SYNTHETIC_AUTH = b"Basic c3ludGhldGljOnRlc3Q="
@@ -51,16 +53,37 @@ class _RecordingTransport:
         self.stop_calls = 0
         self.start_error: BaseException | None = None
         self.stop_error: BaseException | None = None
+        self._status = KismetEventbusTransportStatusV1(
+            worker_lifecycle="stopped",
+            stop_requested=False,
+        )
+
+    @property
+    def status(self) -> KismetEventbusTransportStatusV1:
+        return self._status
+
+    def set_status(
+        self,
+        worker_lifecycle: str,
+        *,
+        stop_requested: bool = False,
+    ) -> None:
+        self._status = KismetEventbusTransportStatusV1(
+            worker_lifecycle=worker_lifecycle,
+            stop_requested=stop_requested,
+        )
 
     def start(self) -> None:
         self.start_calls += 1
         if self.start_error is not None:
             raise self.start_error
+        self.set_status("running")
 
     def stop(self) -> None:
         self.stop_calls += 1
         if self.stop_error is not None:
             raise self.stop_error
+        self.set_status("stopped")
 
 
 class _BlockingStartTransport(_RecordingTransport):
@@ -123,6 +146,7 @@ class KismetEventbusRuntimeTests(unittest.TestCase):
             [
                 "KismetEventbusRuntime",
                 "KismetEventbusRuntimeError",
+                "KismetEventbusRuntimeHealthV1",
                 "KismetEventbusRuntimeStatusV1",
             ],
         )
@@ -142,6 +166,89 @@ class KismetEventbusRuntimeTests(unittest.TestCase):
             KismetEventbusRuntime.status,
             property,
         )
+        self.assertIsInstance(
+            KismetEventbusRuntime.health,
+            property,
+        )
+        self.assertEqual(
+            tuple(inspect.signature(KismetEventbusRuntime.recover).parameters),
+            ("self",),
+        )
+
+    def test_health_dataclass_contract(self) -> None:
+        self.assertEqual(
+            tuple(KismetEventbusRuntimeHealthV1.__dataclass_fields__),
+            (
+                "runtime_lifecycle",
+                "transport_worker_lifecycle",
+                "control_state",
+                "recovery_action",
+            ),
+        )
+
+        health = KismetEventbusRuntimeHealthV1(
+            runtime_lifecycle="stopped",
+            transport_worker_lifecycle="stopped",
+            control_state="inactive",
+            recovery_action="none",
+        )
+        runtime = self._runtime_with_transport(_RecordingTransport())
+        self.assertEqual(
+            health,
+            KismetEventbusRuntimeHealthV1(
+                runtime_lifecycle="stopped",
+                transport_worker_lifecycle="stopped",
+                control_state="inactive",
+                recovery_action="none",
+            ),
+        )
+        self.assertIsNot(health, runtime.health)
+        self.assertFalse(hasattr(health, "__dict__"))
+        self.assertEqual(repr(health), "KismetEventbusRuntimeHealthV1()")
+        self.assertEqual(str(health), "KismetEventbusRuntimeHealthV1()")
+
+        with self.assertRaises(Exception):
+            health.runtime_lifecycle = "active"  # type: ignore[misc]
+
+        for kwargs in (
+            {
+                "runtime_lifecycle": "invalid",
+                "transport_worker_lifecycle": "stopped",
+                "control_state": "inactive",
+                "recovery_action": "none",
+            },
+            {
+                "runtime_lifecycle": "stopped",
+                "transport_worker_lifecycle": "invalid",
+                "control_state": "inactive",
+                "recovery_action": "none",
+            },
+            {
+                "runtime_lifecycle": "stopped",
+                "transport_worker_lifecycle": "stopped",
+                "control_state": "invalid",
+                "recovery_action": "none",
+            },
+            {
+                "runtime_lifecycle": "stopped",
+                "transport_worker_lifecycle": "stopped",
+                "control_state": "inactive",
+                "recovery_action": "invalid",
+            },
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError) as ctx:
+                    KismetEventbusRuntimeHealthV1(**kwargs)
+                expected_field = next(
+                    field
+                    for field, value in kwargs.items()
+                    if value == "invalid"
+                )
+
+                self.assertEqual(
+                    str(ctx.exception),
+                    expected_field,
+                )
 
     def test_constructs_exactly_one_handler_and_transport(self) -> None:
         config = _config()
@@ -494,6 +601,353 @@ class KismetEventbusRuntimeTests(unittest.TestCase):
         runtime.stop()
         self.assertEqual(transport.stop_calls, 2)
         self.assertEqual(runtime.status.lifecycle, "stopped")
+
+    def test_initial_health_is_inactive_and_none(self) -> None:
+        runtime = self._runtime_with_transport(_RecordingTransport())
+        self.assertEqual(
+            runtime.health,
+            KismetEventbusRuntimeHealthV1(
+                runtime_lifecycle="stopped",
+                transport_worker_lifecycle="stopped",
+                control_state="inactive",
+                recovery_action="none",
+            ),
+        )
+        self.assertIsNot(runtime.health, runtime.health)
+
+    def test_active_running_health_classification(self) -> None:
+        transport = _RecordingTransport()
+        runtime = self._runtime_with_transport(transport)
+        runtime.start()
+
+        self.assertEqual(
+            runtime.health,
+            KismetEventbusRuntimeHealthV1(
+                runtime_lifecycle="active",
+                transport_worker_lifecycle="running",
+                control_state="worker_running",
+                recovery_action="none",
+            ),
+        )
+        runtime.stop()
+
+    def test_active_stopped_health_requires_restart(self) -> None:
+        transport = _RecordingTransport()
+        runtime = self._runtime_with_transport(transport)
+        runtime.start()
+        transport.set_status("stopped")
+
+        health = runtime.health
+        self.assertEqual(
+            health,
+            KismetEventbusRuntimeHealthV1(
+                runtime_lifecycle="active",
+                transport_worker_lifecycle="stopped",
+                control_state="recovery_required",
+                recovery_action="restart",
+            ),
+        )
+
+    def test_restart_recovery_stops_then_starts(self) -> None:
+        transport = _RecordingTransport()
+        events: list[str] = []
+
+        original_start = transport.start
+        original_stop = transport.stop
+
+        def wrapped_start() -> None:
+            events.append("start")
+            original_start()
+
+        def wrapped_stop() -> None:
+            events.append("stop")
+            original_stop()
+
+        transport.start = wrapped_start  # type: ignore[assignment]
+        transport.stop = wrapped_stop  # type: ignore[assignment]
+        runtime = self._runtime_with_transport(transport)
+        runtime.start()
+        transport.set_status("stopped")
+
+        runtime.recover()
+
+        self.assertEqual(events, ["start", "stop", "start"])
+        self.assertEqual(transport.start_calls, 2)
+        self.assertEqual(transport.stop_calls, 1)
+        self.assertEqual(runtime.status.generation, 2)
+        self.assertEqual(runtime.status.lifecycle, "active")
+
+    def test_restart_stop_failure_prevents_start(self) -> None:
+        transport = _RecordingTransport()
+        runtime = self._runtime_with_transport(transport)
+        runtime.start()
+        transport.set_status("stopped")
+        transport.stop_error = RuntimeError("stop failed")
+
+        with self.assertRaises(RuntimeError):
+            runtime.recover()
+
+        self.assertEqual(transport.start_calls, 1)
+        self.assertEqual(transport.stop_calls, 1)
+        self.assertEqual(runtime.status.lifecycle, "stop_failed")
+
+    def test_start_failed_recovers_through_one_start(self) -> None:
+        transport = _RecordingTransport()
+        runtime = self._runtime_with_transport(transport)
+        transport.start_error = RuntimeError("start failed")
+
+        with self.assertRaises(RuntimeError):
+            runtime.start()
+
+        self.assertEqual(runtime.status.lifecycle, "start_failed")
+        self.assertEqual(runtime.status.generation, 0)
+
+        transport.start_error = None
+        runtime.recover()
+
+        self.assertEqual(transport.start_calls, 2)
+        self.assertEqual(runtime.status.lifecycle, "active")
+        self.assertEqual(runtime.status.generation, 1)
+
+    def test_stop_failed_recovers_through_one_stop(self) -> None:
+        transport = _RecordingTransport()
+        runtime = self._runtime_with_transport(transport)
+        runtime.start()
+        transport.stop_error = RuntimeError("stop failed")
+
+        with self.assertRaises(RuntimeError):
+            runtime.stop()
+
+        self.assertEqual(runtime.status.lifecycle, "stop_failed")
+        self.assertEqual(transport.start_calls, 1)
+
+        transport.stop_error = None
+        runtime.recover()
+
+        self.assertEqual(transport.stop_calls, 2)
+        self.assertEqual(transport.start_calls, 1)
+        self.assertEqual(runtime.status.lifecycle, "stopped")
+
+    def test_stopped_running_recovers_through_one_stop(self) -> None:
+        transport = _RecordingTransport()
+        transport.set_status("running")
+        runtime = self._runtime_with_transport(transport)
+
+        runtime.recover()
+
+        self.assertEqual(transport.stop_calls, 1)
+        self.assertEqual(transport.start_calls, 0)
+        self.assertEqual(runtime.status.lifecycle, "stopped")
+
+    def test_starting_and_stopping_health_snapshots_transitioning(self) -> None:
+        start_transport = _BlockingStartTransport()
+        start_runtime = self._runtime_with_transport(start_transport)
+
+        start_errors: list[BaseException] = []
+
+        def do_start() -> None:
+            try:
+                start_runtime.start()
+            except BaseException as exc:
+                start_errors.append(exc)
+
+        starter = threading.Thread(target=do_start, daemon=True)
+        starter.start()
+        self.assertTrue(start_transport.entered.wait(timeout=5))
+        self.assertEqual(
+            start_runtime.health,
+            KismetEventbusRuntimeHealthV1(
+                runtime_lifecycle="starting",
+                transport_worker_lifecycle="stopped",
+                control_state="transitioning",
+                recovery_action="wait",
+            ),
+        )
+        start_transport.release.set()
+        self._join(starter)
+        self.assertEqual(start_errors, [])
+        start_runtime.stop()
+
+        stop_transport = _BlockingStopTransport()
+        stop_runtime = self._runtime_with_transport(stop_transport)
+        stop_runtime.start()
+
+        stop_errors: list[BaseException] = []
+
+        def do_stop() -> None:
+            try:
+                stop_runtime.stop()
+            except BaseException as exc:
+                stop_errors.append(exc)
+
+        stopper = threading.Thread(target=do_stop, daemon=True)
+        stopper.start()
+        self.assertTrue(stop_transport.entered.wait(timeout=5))
+        self.assertEqual(
+            stop_runtime.health,
+            KismetEventbusRuntimeHealthV1(
+                runtime_lifecycle="stopping",
+                transport_worker_lifecycle="running",
+                control_state="transitioning",
+                recovery_action="wait",
+            ),
+        )
+        stop_transport.release.set()
+        self._join(stopper)
+        self.assertEqual(stop_errors, [])
+        self.assertEqual(stop_runtime.status.lifecycle, "stopped")
+
+    def test_recover_none_is_noop(self) -> None:
+        transport = _RecordingTransport()
+        runtime = self._runtime_with_transport(transport)
+
+        runtime.recover()
+
+        self.assertEqual(transport.start_calls, 0)
+        self.assertEqual(transport.stop_calls, 0)
+        self.assertEqual(
+            runtime.health,
+            KismetEventbusRuntimeHealthV1(
+                runtime_lifecycle="stopped",
+                transport_worker_lifecycle="stopped",
+                control_state="inactive",
+                recovery_action="none",
+            ),
+        )
+
+    def test_recover_reports_concurrent_transitions_without_waiting(
+        self,
+    ) -> None:
+        def assert_transition_error(
+            runtime: KismetEventbusRuntime,
+            entered: threading.Event,
+            release: threading.Event,
+            operation: object,
+        ) -> None:
+            operation_errors: list[BaseException] = []
+            recovery_errors: list[BaseException] = []
+            recovery_done = threading.Event()
+
+            def run_operation() -> None:
+                try:
+                    operation()  # type: ignore[operator]
+                except BaseException as exc:
+                    operation_errors.append(exc)
+
+            def run_recovery() -> None:
+                try:
+                    runtime.recover()
+                except BaseException as exc:
+                    recovery_errors.append(exc)
+                finally:
+                    recovery_done.set()
+
+            operation_thread = threading.Thread(
+                target=run_operation,
+                daemon=True,
+            )
+            recovery_thread = threading.Thread(
+                target=run_recovery,
+                daemon=True,
+            )
+
+            operation_thread.start()
+            self.assertTrue(entered.wait(timeout=5))
+            recovery_thread.start()
+
+            try:
+                self.assertTrue(
+                    recovery_done.wait(timeout=1),
+                    "recover waited behind an active transition",
+                )
+            finally:
+                release.set()
+                self._join(operation_thread)
+                self._join(recovery_thread)
+
+            self.assertEqual(operation_errors, [])
+            self.assertEqual(len(recovery_errors), 1)
+            self.assertIsInstance(
+                recovery_errors[0],
+                runtime_module.KismetEventbusRuntimeError,
+            )
+            self.assertEqual(
+                str(recovery_errors[0]),
+                "transition_in_progress",
+            )
+
+        start_transport = _BlockingStartTransport()
+        start_runtime = self._runtime_with_transport(
+            start_transport
+        )
+
+        assert_transition_error(
+            start_runtime,
+            start_transport.entered,
+            start_transport.release,
+            start_runtime.start,
+        )
+
+        self.assertEqual(
+            start_runtime.status.start_attempt_count,
+            1,
+        )
+        self.assertEqual(
+            start_runtime.status.lifecycle,
+            "active",
+        )
+        start_runtime.stop()
+
+        stop_transport = _BlockingStopTransport()
+        stop_runtime = self._runtime_with_transport(
+            stop_transport
+        )
+        stop_runtime.start()
+
+        assert_transition_error(
+            stop_runtime,
+            stop_transport.entered,
+            stop_transport.release,
+            stop_runtime.stop,
+        )
+
+        self.assertEqual(
+            stop_runtime.status.stop_attempt_count,
+            1,
+        )
+        self.assertEqual(
+            stop_runtime.status.lifecycle,
+            "stopped",
+        )
+
+    def test_recover_propagates_delegated_exceptions_unchanged(self) -> None:
+        transport = _RecordingTransport()
+        runtime = self._runtime_with_transport(transport)
+        runtime.start()
+        transport.set_status("stopped")
+        exc = RuntimeError("delegated stop")
+        transport.stop_error = exc
+
+        with self.assertRaises(RuntimeError) as ctx:
+            runtime.recover()
+
+        self.assertIs(ctx.exception, exc)
+        self.assertEqual(runtime.status.lifecycle, "stop_failed")
+
+    def test_runtime_module_does_not_access_private_transport_fields(
+        self,
+    ) -> None:
+        source = Path("kismet_eventbus_runtime.py").read_text(encoding="utf-8")
+        for forbidden in (
+            "._thread",
+            "._retiring_thread",
+            "._stop_event",
+            "._retiring_stop_event",
+            "._ws",
+            "._ws_owner",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
 
     def test_same_handler_and_transport_are_reused_across_generations(self) -> None:
         config = _config()

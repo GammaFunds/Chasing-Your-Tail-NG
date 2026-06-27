@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -23,6 +24,7 @@ _logger = logging.getLogger(__name__)
 __all__ = [
     "KismetEventbusError",
     "KismetEventbusTransport",
+    "KismetEventbusTransportStatusV1",
 ]
 
 
@@ -34,6 +36,38 @@ _SCHEME_MAP: dict[str, str] = {
     "http": "ws",
     "https": "wss",
 }
+
+_WORKER_LIFECYCLES = frozenset(
+    {
+        "stopped",
+        "running",
+        "retiring",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class KismetEventbusTransportStatusV1:
+    """Immutable content-free snapshot of transport worker state."""
+
+    worker_lifecycle: str
+    stop_requested: bool
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.worker_lifecycle) is not str
+            or self.worker_lifecycle not in _WORKER_LIFECYCLES
+        ):
+            raise ValueError("worker_lifecycle")
+
+        if type(self.stop_requested) is not bool:
+            raise ValueError("stop_requested")
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}()"
+
+    def __str__(self) -> str:
+        return repr(self)
 
 
 def _build_ws_url(base_url: str) -> str:
@@ -318,6 +352,40 @@ class KismetEventbusTransport:
         stop_event.wait(
             timeout=KismetEventbusTransport._CONNECT_RETRY_DELAY_S,
         )
+
+    @property
+    def status(self) -> KismetEventbusTransportStatusV1:
+        """Return a fresh immutable snapshot of worker state only."""
+        with self._lock:
+            thread = self._thread
+            stop_event = self._stop_event
+            retiring_thread = self._retiring_thread
+            retiring_stop_event = self._retiring_stop_event
+
+            if thread is not None and thread.is_alive():
+                return KismetEventbusTransportStatusV1(
+                    worker_lifecycle="running",
+                    stop_requested=(
+                        stop_event.is_set()
+                        if stop_event is not None
+                        else False
+                    ),
+                )
+
+            if retiring_thread is not None and retiring_thread.is_alive():
+                return KismetEventbusTransportStatusV1(
+                    worker_lifecycle="retiring",
+                    stop_requested=(
+                        retiring_stop_event.is_set()
+                        if retiring_stop_event is not None
+                        else False
+                    ),
+                )
+
+            return KismetEventbusTransportStatusV1(
+                worker_lifecycle="stopped",
+                stop_requested=False,
+            )
 
     # ------------------------------------------------------------------
     # Public API
