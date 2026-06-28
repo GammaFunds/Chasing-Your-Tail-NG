@@ -75,6 +75,15 @@ def _valid_kwargs(**overrides: object) -> dict[str, object]:
     return kwargs
 
 
+def _valid_credentials_kwargs(**overrides: object) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "authorization_header_value": _SYNTHETIC_AUTH,
+        "hmac_key": _SYNTHETIC_HMAC,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
 # ======================================================================
 # 1. Public surface
 # ======================================================================
@@ -83,12 +92,14 @@ def _valid_kwargs(**overrides: object) -> dict[str, object]:
 class DeploymentSurfaceTests(unittest.TestCase):
     """Exact __all__, signature, and public surface."""
 
-    def test_module_all_contains_exactly_three_names(self) -> None:
+    def test_module_all_contains_exactly_five_names(self) -> None:
         self.assertEqual(
             deployment_module.__all__,
             (
                 "KismetEventbusDeploymentManifestV1",
+                "KismetEventbusCredentialsV1",
                 "create_kismet_eventbus_runtime",
+                "create_kismet_eventbus_runtime_from_credential_provider",
                 "create_kismet_eventbus_runtime_from_manifest",
             ),
         )
@@ -151,6 +162,48 @@ class DeploymentSurfaceTests(unittest.TestCase):
             kismet_eventbus_runtime.KismetEventbusRuntime,
         )
 
+    def test_exact_credential_provider_signature_and_annotations(self) -> None:
+        sig = inspect.signature(
+            deployment_module.create_kismet_eventbus_runtime_from_credential_provider,
+            eval_str=True,
+        )
+
+        for param in sig.parameters.values():
+            self.assertEqual(
+                param.kind,
+                inspect.Parameter.KEYWORD_ONLY,
+                f"parameter {param.name} is not keyword-only",
+            )
+
+        expected_names = (
+            "manifest",
+            "credential_provider",
+            "ingest_timestamp_us_provider",
+        )
+
+        self.assertEqual(
+            tuple(sig.parameters.keys()),
+            expected_names,
+        )
+
+        expected_annotations = {
+            "manifest": KismetEventbusDeploymentManifestV1,
+            "credential_provider": Callable[
+                [], deployment_module.KismetEventbusCredentialsV1
+            ],
+            "ingest_timestamp_us_provider": Callable[[], int],
+        }
+
+        for name, expected_type in expected_annotations.items():
+            with self.subTest(param=name):
+                actual = sig.parameters[name].annotation
+                self.assertEqual(actual, expected_type)
+
+        self.assertEqual(
+            sig.return_annotation,
+            kismet_eventbus_runtime.KismetEventbusRuntime,
+        )
+
     def test_no_public_class_in_module(self) -> None:
         module_defined_public_functions = {
             name
@@ -167,6 +220,7 @@ class DeploymentSurfaceTests(unittest.TestCase):
             module_defined_public_functions,
             {
                 "create_kismet_eventbus_runtime",
+                "create_kismet_eventbus_runtime_from_credential_provider",
                 "create_kismet_eventbus_runtime_from_manifest",
             },
         )
@@ -184,7 +238,10 @@ class DeploymentSurfaceTests(unittest.TestCase):
 
         self.assertEqual(
             module_defined_public_classes,
-            {"KismetEventbusDeploymentManifestV1"},
+            {
+                "KismetEventbusDeploymentManifestV1",
+                "KismetEventbusCredentialsV1",
+            },
         )
 
 
@@ -352,6 +409,430 @@ class DeploymentRuntimeConstructorForwardingTests(unittest.TestCase):
                 create_kismet_eventbus_runtime(**_valid_kwargs())
 
         self.assertIs(ctx.exception, runtime_error)
+
+
+# ======================================================================
+# 4. Credential container
+# ======================================================================
+
+
+class CredentialsStructureTests(unittest.TestCase):
+    """KismetEventbusCredentialsV1 structural contract."""
+
+    def test_credentials_is_frozen_dataclass(self) -> None:
+        obj = deployment_module.KismetEventbusCredentialsV1(
+            **_valid_credentials_kwargs(),
+        )
+        with self.assertRaises(AttributeError):
+            obj.authorization_header_value = b"other"  # type: ignore[misc]
+
+    def test_credentials_is_slotted(self) -> None:
+        obj = deployment_module.KismetEventbusCredentialsV1(
+            **_valid_credentials_kwargs(),
+        )
+        with self.assertRaises(AttributeError):
+            obj.__dict__
+
+    def test_exact_ordered_field_tuple(self) -> None:
+        import dataclasses
+
+        expected = (
+            "authorization_header_value",
+            "hmac_key",
+        )
+        actual = tuple(
+            f.name
+            for f in dataclasses.fields(
+                deployment_module.KismetEventbusCredentialsV1
+            )
+        )
+        self.assertEqual(actual, expected)
+
+    def test_constructor_signature_exact(self) -> None:
+        sig = inspect.signature(
+            deployment_module.KismetEventbusCredentialsV1,
+            eval_str=True,
+        )
+
+        for param in sig.parameters.values():
+            self.assertEqual(
+                param.kind,
+                inspect.Parameter.KEYWORD_ONLY,
+                f"parameter {param.name} is not keyword-only",
+            )
+
+        self.assertEqual(
+            tuple(sig.parameters.keys()),
+            (
+                "authorization_header_value",
+                "hmac_key",
+            ),
+        )
+        self.assertEqual(
+            sig.parameters["authorization_header_value"].annotation,
+            bytes,
+        )
+        self.assertEqual(
+            sig.parameters["hmac_key"].annotation,
+            bytes,
+        )
+
+    def test_redacted_repr_and_str(self) -> None:
+        obj = deployment_module.KismetEventbusCredentialsV1(
+            **_valid_credentials_kwargs(),
+        )
+        self.assertEqual(
+            repr(obj),
+            "<KismetEventbusCredentialsV1 redacted>",
+        )
+        self.assertEqual(
+            str(obj),
+            "<KismetEventbusCredentialsV1 redacted>",
+        )
+
+    def test_identity_equality_and_hash_contract(self) -> None:
+        kwargs = _valid_credentials_kwargs()
+        a = deployment_module.KismetEventbusCredentialsV1(**kwargs)
+        b = deployment_module.KismetEventbusCredentialsV1(**kwargs)
+
+        self.assertIs(deployment_module.KismetEventbusCredentialsV1.__eq__, object.__eq__)
+        self.assertIs(deployment_module.KismetEventbusCredentialsV1.__hash__, object.__hash__)
+        self.assertEqual(a, a)
+        self.assertEqual(hash(a), hash(a))
+        self.assertIsNot(a, b)
+        self.assertNotEqual(a, b)
+
+    def test_empty_bytes_are_allowed(self) -> None:
+        obj = deployment_module.KismetEventbusCredentialsV1(
+            authorization_header_value=b"",
+            hmac_key=b"",
+        )
+        self.assertEqual(obj.authorization_header_value, b"")
+        self.assertEqual(obj.hmac_key, b"")
+
+    def test_authorization_bytes_subclass_rejected(self) -> None:
+        class AuthorizationBytes(bytes):
+            pass
+
+        with self.assertRaises(TypeError):
+            deployment_module.KismetEventbusCredentialsV1(
+                **_valid_credentials_kwargs(
+                    authorization_header_value=AuthorizationBytes(
+                        _SYNTHETIC_AUTH
+                    )
+                ),
+            )
+
+    def test_hmac_bytes_subclass_rejected(self) -> None:
+        class HmacBytes(bytes):
+            pass
+
+        with self.assertRaises(TypeError):
+            deployment_module.KismetEventbusCredentialsV1(
+                **_valid_credentials_kwargs(
+                    hmac_key=HmacBytes(_SYNTHETIC_HMAC)
+                ),
+            )
+
+    def test_credentials_have_no_dict(self) -> None:
+        obj = deployment_module.KismetEventbusCredentialsV1(
+            **_valid_credentials_kwargs(),
+        )
+        with self.assertRaises(AttributeError):
+            obj.__dict__
+
+
+# ======================================================================
+# 5. Credential provider wrapper
+# ======================================================================
+
+
+class CredentialProviderAssemblyTests(unittest.TestCase):
+    """create_kismet_eventbus_runtime_from_credential_provider contract."""
+
+    def _make_manifest(self, **overrides: object) -> KismetEventbusDeploymentManifestV1:
+        kwargs = dict(
+            base_url="https://kismet.deployment.test",
+            topics=("NEW_DEVICE",),
+            tls_mode="verify_required",
+            connect_timeout_s=10.0,
+            reconnect_delay_s=5.0,
+            stop_join_timeout_s=5.0,
+            db_path=_SYNTHETIC_PATH,
+            collection_session_id=_SYNTHETIC_SESSION,
+            sensor_id=_SYNTHETIC_SENSOR,
+        )
+        kwargs.update(overrides)
+        return KismetEventbusDeploymentManifestV1(**kwargs)
+
+    def test_invalid_manifest_prevents_provider_invocation(self) -> None:
+        provider = Mock(
+            return_value=deployment_module.KismetEventbusCredentialsV1(
+                **_valid_credentials_kwargs()
+            )
+        )
+
+        with patch.object(
+            deployment_module,
+            "create_kismet_eventbus_runtime_from_manifest",
+        ) as mock_delegate:
+            with self.assertRaises(TypeError) as ctx:
+                deployment_module.create_kismet_eventbus_runtime_from_credential_provider(
+                    manifest={"base_url": "invalid"},  # type: ignore[arg-type]
+                    credential_provider=provider,
+                    ingest_timestamp_us_provider=_provider,
+                )
+
+        self.assertEqual(str(ctx.exception), "manifest invalid")
+        provider.assert_not_called()
+        mock_delegate.assert_not_called()
+
+    def test_non_callable_provider_rejected_before_invocation(self) -> None:
+        manifest = self._make_manifest()
+
+        with patch.object(
+            deployment_module,
+            "create_kismet_eventbus_runtime_from_manifest",
+        ) as mock_delegate:
+            with self.assertRaises(TypeError) as ctx:
+                deployment_module.create_kismet_eventbus_runtime_from_credential_provider(
+                    manifest=manifest,
+                    credential_provider=object(),  # type: ignore[arg-type]
+                    ingest_timestamp_us_provider=_provider,
+                )
+
+        self.assertEqual(str(ctx.exception), "credential_provider invalid")
+        mock_delegate.assert_not_called()
+
+    def test_provider_invoked_exactly_once(self) -> None:
+        manifest = self._make_manifest()
+        credentials = deployment_module.KismetEventbusCredentialsV1(
+            **_valid_credentials_kwargs()
+        )
+        provider = Mock(return_value=credentials)
+
+        with patch.object(
+            deployment_module,
+            "create_kismet_eventbus_runtime_from_manifest",
+            return_value=Mock(spec=["start", "stop", "recover"]),
+        ):
+            deployment_module.create_kismet_eventbus_runtime_from_credential_provider(
+                manifest=manifest,
+                credential_provider=provider,
+                ingest_timestamp_us_provider=_provider,
+            )
+
+        provider.assert_called_once_with()
+
+    def test_provider_exception_identity_propagates(self) -> None:
+        manifest = self._make_manifest()
+        sentinel = RuntimeError("provider sentinel")
+        provider = Mock(side_effect=sentinel)
+
+        with patch.object(
+            deployment_module,
+            "create_kismet_eventbus_runtime_from_manifest",
+        ) as mock_delegate:
+            with self.assertRaises(RuntimeError) as ctx:
+                deployment_module.create_kismet_eventbus_runtime_from_credential_provider(
+                    manifest=manifest,
+                    credential_provider=provider,
+                    ingest_timestamp_us_provider=_provider,
+                )
+
+        self.assertIs(ctx.exception, sentinel)
+        provider.assert_called_once_with()
+        mock_delegate.assert_not_called()
+
+    def test_exact_provider_result_type_rejected_before_field_access(self) -> None:
+        manifest = self._make_manifest()
+        accesses: list[str] = []
+
+        class TrapResult(deployment_module.KismetEventbusCredentialsV1):
+            __slots__ = ()
+
+            def __getattribute__(self, name: str) -> object:
+                if name == "authorization_header_value":
+                    accesses.append("authorization_header_value")
+                    raise AssertionError("unexpected authorization access")
+                if name == "hmac_key":
+                    accesses.append("hmac_key")
+                    raise AssertionError("unexpected hmac access")
+                return super().__getattribute__(name)
+
+        provider = Mock(return_value=object.__new__(TrapResult))
+
+        with patch.object(
+            deployment_module,
+            "create_kismet_eventbus_runtime_from_manifest",
+        ) as mock_delegate:
+            with self.assertRaises(TypeError) as ctx:
+                deployment_module.create_kismet_eventbus_runtime_from_credential_provider(
+                    manifest=manifest,
+                    credential_provider=provider,
+                    ingest_timestamp_us_provider=_provider,
+                )
+
+        self.assertEqual(str(ctx.exception), "credentials invalid")
+        self.assertEqual(accesses, [])
+        provider.assert_called_once_with()
+        mock_delegate.assert_not_called()
+
+    def test_delegate_invoked_exactly_once_with_identity(self) -> None:
+        manifest = self._make_manifest()
+        credentials = deployment_module.KismetEventbusCredentialsV1(
+            authorization_header_value=_SYNTHETIC_AUTH,
+            hmac_key=_SYNTHETIC_HMAC,
+        )
+        provider = Mock(return_value=credentials)
+        fake_runtime = object()
+
+        with patch.object(
+            deployment_module,
+            "create_kismet_eventbus_runtime_from_manifest",
+            return_value=fake_runtime,
+        ) as mock_delegate:
+            result = deployment_module.create_kismet_eventbus_runtime_from_credential_provider(
+                manifest=manifest,
+                credential_provider=provider,
+                ingest_timestamp_us_provider=_provider,
+            )
+
+        self.assertIs(result, fake_runtime)
+        provider.assert_called_once_with()
+        mock_delegate.assert_called_once_with(
+            manifest=manifest,
+            authorization_header_value=_SYNTHETIC_AUTH,
+            hmac_key=_SYNTHETIC_HMAC,
+            ingest_timestamp_us_provider=_provider,
+        )
+
+        _, kwargs = mock_delegate.call_args
+        self.assertIs(kwargs["manifest"], manifest)
+        self.assertIs(
+            kwargs["authorization_header_value"],
+            _SYNTHETIC_AUTH,
+        )
+        self.assertIs(kwargs["hmac_key"], _SYNTHETIC_HMAC)
+        self.assertIs(
+            kwargs["ingest_timestamp_us_provider"],
+            _provider,
+        )
+
+    def test_delegate_exception_identity_propagates(self) -> None:
+        manifest = self._make_manifest()
+        credentials = deployment_module.KismetEventbusCredentialsV1(
+            **_valid_credentials_kwargs()
+        )
+        provider = Mock(return_value=credentials)
+        sentinel = TypeError("delegate sentinel")
+
+        with patch.object(
+            deployment_module,
+            "create_kismet_eventbus_runtime_from_manifest",
+            side_effect=sentinel,
+        ) as mock_delegate:
+            with self.assertRaises(TypeError) as ctx:
+                deployment_module.create_kismet_eventbus_runtime_from_credential_provider(
+                    manifest=manifest,
+                    credential_provider=provider,
+                    ingest_timestamp_us_provider=_provider,
+                )
+
+        self.assertIs(ctx.exception, sentinel)
+        provider.assert_called_once_with()
+        mock_delegate.assert_called_once()
+
+    def test_no_start_stop_or_recover_called(self) -> None:
+        manifest = self._make_manifest()
+        credentials = deployment_module.KismetEventbusCredentialsV1(
+            **_valid_credentials_kwargs()
+        )
+        provider = Mock(return_value=credentials)
+        runtime_double = Mock(spec=["start", "stop", "recover"])
+
+        with patch.object(
+            deployment_module,
+            "create_kismet_eventbus_runtime_from_manifest",
+            return_value=runtime_double,
+        ):
+            result = deployment_module.create_kismet_eventbus_runtime_from_credential_provider(
+                manifest=manifest,
+                credential_provider=provider,
+                ingest_timestamp_us_provider=_provider,
+            )
+
+        self.assertIs(result, runtime_double)
+        runtime_double.start.assert_not_called()
+        runtime_double.stop.assert_not_called()
+        runtime_double.recover.assert_not_called()
+
+    def test_generated_exception_text_does_not_include_secret_content(self) -> None:
+        manifest = self._make_manifest()
+
+        secret_bytes_a = b"leaked-secret-content-a"
+        secret_bytes_b = b"leaked-secret-content-b"
+        accesses: list[str] = []
+
+        class TrapResult(deployment_module.KismetEventbusCredentialsV1):
+            __slots__ = ()
+
+            def __getattribute__(self, name: str) -> object:
+                if name == "authorization_header_value":
+                    accesses.append("authorization_header_value")
+                    raise AssertionError("unexpected authorization access")
+                if name == "hmac_key":
+                    accesses.append("hmac_key")
+                    raise AssertionError("unexpected hmac access")
+                return super().__getattribute__(name)
+
+        credentials = object.__new__(TrapResult)
+        object.__setattr__(
+            credentials,
+            "authorization_header_value",
+            secret_bytes_a,
+        )
+        object.__setattr__(
+            credentials,
+            "hmac_key",
+            secret_bytes_b,
+        )
+
+        self.assertIs(
+            object.__getattribute__(
+                credentials,
+                "authorization_header_value",
+            ),
+            secret_bytes_a,
+        )
+        self.assertIs(
+            object.__getattribute__(
+                credentials,
+                "hmac_key",
+            ),
+            secret_bytes_b,
+        )
+
+        provider = Mock(return_value=credentials)
+
+        with patch.object(
+            deployment_module,
+            "create_kismet_eventbus_runtime_from_manifest",
+        ) as mock_delegate:
+            with self.assertRaises(TypeError) as ctx:
+                deployment_module.create_kismet_eventbus_runtime_from_credential_provider(
+                    manifest=manifest,
+                    credential_provider=provider,
+                    ingest_timestamp_us_provider=_provider,
+                )
+
+        exception_text = str(ctx.exception)
+        self.assertEqual(exception_text, "credentials invalid")
+        self.assertNotIn(secret_bytes_a.decode("ascii"), exception_text)
+        self.assertNotIn(secret_bytes_b.decode("ascii"), exception_text)
+        self.assertEqual(accesses, [])
+        provider.assert_called_once_with()
+        mock_delegate.assert_not_called()
 
 
 # ======================================================================

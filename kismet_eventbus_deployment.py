@@ -17,7 +17,9 @@ import kismet_eventbus_runtime_config
 
 __all__ = (
     "KismetEventbusDeploymentManifestV1",
+    "KismetEventbusCredentialsV1",
     "create_kismet_eventbus_runtime",
+    "create_kismet_eventbus_runtime_from_credential_provider",
     "create_kismet_eventbus_runtime_from_manifest",
 )
 
@@ -65,6 +67,29 @@ class KismetEventbusDeploymentManifestV1:
             raise TypeError("sensor_id")
 
 
+@dataclass(frozen=True, slots=True, repr=False, eq=False, kw_only=True)
+class KismetEventbusCredentialsV1:
+    """Immutable, redacted deployment credentials container.
+
+    The boundary accepts only exact built-in ``bytes`` values and does not
+    expose credential content in repr or str output.
+    """
+
+    authorization_header_value: bytes
+    hmac_key: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.authorization_header_value) is not bytes:
+            raise TypeError("authorization_header_value")
+        if type(self.hmac_key) is not bytes:
+            raise TypeError("hmac_key")
+
+    def __repr__(self) -> str:
+        return "<KismetEventbusCredentialsV1 redacted>"
+
+    __str__ = __repr__
+
+
 def create_kismet_eventbus_runtime(
     *,
     base_url: str,
@@ -106,6 +131,35 @@ def create_kismet_eventbus_runtime(
         ingest_timestamp_us_provider=ingest_timestamp_us_provider,
     )
     return runtime
+
+
+def create_kismet_eventbus_runtime_from_credential_provider(
+    *,
+    manifest: KismetEventbusDeploymentManifestV1,
+    credential_provider: Callable[[], KismetEventbusCredentialsV1],
+    ingest_timestamp_us_provider: Callable[[], int],
+) -> kismet_eventbus_runtime.KismetEventbusRuntime:
+    """Create an inactive runtime from caller-owned credentials lookup.
+
+    The wrapper itself adds no credential discovery, persistence, caching,
+    logging, fallback, transformation, or runtime activation.  Provider
+    behavior and lifecycle remain caller-owned.
+    """
+    if type(manifest) is not KismetEventbusDeploymentManifestV1:
+        raise TypeError("manifest invalid")
+    if not callable(credential_provider):
+        raise TypeError("credential_provider invalid")
+
+    credentials = credential_provider()
+    if type(credentials) is not KismetEventbusCredentialsV1:
+        raise TypeError("credentials invalid")
+
+    return create_kismet_eventbus_runtime_from_manifest(
+        manifest=manifest,
+        authorization_header_value=credentials.authorization_header_value,
+        hmac_key=credentials.hmac_key,
+        ingest_timestamp_us_provider=ingest_timestamp_us_provider,
+    )
 
 
 def create_kismet_eventbus_runtime_from_manifest(
