@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import subprocess
+import stat
 import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -55,6 +57,63 @@ def _all_import_names(filepath: Path) -> set[str]:
             if node.module is not None and node.level == 0:
                 names.add(node.module.split(".")[0])
     return names
+
+
+def _validate_module_names(modules: list[str]) -> list[str]:
+    """Return a list of validation errors for module names.
+    An empty list means all names are valid.
+    """
+    errors: list[str] = []
+    seen: set[str] = set()
+    for name in modules:
+        if type(name) is not str:
+            errors.append(f"module name is not a built-in str: {type(name).__name__}")
+            continue
+        if not name:
+            errors.append("module name is empty")
+            continue
+        if "." in name:
+            errors.append(f"module name contains dot: {name!r}")
+            continue
+        if "/" in name or "\\" in name:
+            errors.append(f"module name contains path separator: {name!r}")
+            continue
+        if not name.isidentifier():
+            errors.append(f"module name is not a valid Python identifier: {name!r}")
+            continue
+        if name in seen:
+            errors.append(f"duplicate module name: {name!r}")
+        seen.add(name)
+    return errors
+
+
+def _validate_declared_sources(root: Path, modules: list[str]) -> list[str]:
+    """Validate flat py-modules source layout under *root*.
+    Returns a list of error messages (empty = valid).
+    """
+    errors: list[str] = []
+    for name in modules:
+        if type(name) is not str:
+            continue  # caught by name validation
+        source = root / f"{name}.py"
+        try:
+            st = source.lstat()
+        except FileNotFoundError:
+            errors.append(f"missing module source: {name}.py")
+            continue
+        except OSError:
+            errors.append(f"cannot access {name}.py")
+            continue
+
+        if stat.S_ISLNK(st.st_mode):
+            errors.append(f"{name}.py is a symbolic link")
+        elif not stat.S_ISREG(st.st_mode):
+            errors.append(f"{name}.py is not a regular file")
+
+        dir_path = root / name
+        if dir_path.is_dir():
+            errors.append(f"directory {name}/ exists beside module file {name}.py")
+    return errors
 
 
 # ======================================================================
@@ -328,3 +387,113 @@ class TestImportProbe(unittest.TestCase):
             )
         self.assertEqual(result.stdout, "")
         self.assertEqual(result.stderr, "")
+
+
+# ======================================================================
+# Source install layout
+# ======================================================================
+
+
+class TestSourceLayout(unittest.TestCase):
+    """Validates that every declared module maps to a regular file at the
+    repository root with no symlinks, missing files, directory collisions,
+    or same-name directory conflicts."""
+
+    def test_declared_module_names_are_unique_valid_flat_identifiers(self) -> None:
+        # Positive: actual declared modules must be valid
+        errors = _validate_module_names(DECLARED_MODULES)
+        self.assertFalse(
+            errors,
+            f"Invalid module names:\n" + "\n".join(errors),
+        )
+
+        # Negative: prove rejection of invalid module names
+        self.assertTrue(
+            _validate_module_names([""]),
+            "Expected rejection of empty module name",
+        )
+        self.assertTrue(
+            _validate_module_names(["a.b"]),
+            "Expected rejection of dotted module name",
+        )
+        self.assertTrue(
+            _validate_module_names(["a/b"]),
+            "Expected rejection of forward-slash path in module name",
+        )
+        self.assertTrue(
+            _validate_module_names(["a\\b"]),
+            "Expected rejection of backslash path in module name",
+        )
+        self.assertTrue(
+            _validate_module_names(["123abc"]),
+            "Expected rejection of invalid Python identifier",
+        )
+        self.assertTrue(
+            _validate_module_names([42]),
+            "Expected rejection of non-string module name",
+        )
+
+        class _StrSub(str):
+            pass
+
+        self.assertTrue(
+            _validate_module_names([_StrSub("x")]),
+            "Expected rejection of str subclass module name",
+        )
+        self.assertTrue(
+            _validate_module_names(["mod", "mod"]),
+            "Expected rejection of duplicate module name",
+        )
+
+    def test_declared_module_sources_are_regular_root_files(self) -> None:
+        errors = _validate_declared_sources(REPO_ROOT, DECLARED_MODULES)
+        self.assertFalse(
+            errors,
+            f"Source layout invalid:\n" + "\n".join(errors),
+        )
+
+    def test_missing_declared_module_source_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "present.py").write_text("")
+            errors = _validate_declared_sources(root, ["present", "absent"])
+            self.assertTrue(errors)
+            self.assertTrue(
+                any("absent" in e for e in errors),
+                f"No error for missing module 'absent': {errors}",
+            )
+
+    def test_directory_in_place_of_module_source_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "mymod.py").mkdir()
+            errors = _validate_declared_sources(root, ["mymod"])
+            self.assertTrue(errors)
+            self.assertTrue(
+                any("not a regular file" in e for e in errors),
+                f"No error for directory in place of file: {errors}",
+            )
+
+    def test_symlink_module_source_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "real.py").write_text("")
+            (root / "mymod.py").symlink_to("real.py")
+            errors = _validate_declared_sources(root, ["mymod"])
+            self.assertTrue(errors)
+            self.assertTrue(
+                any("symbolic link" in e for e in errors),
+                f"No error for symlink module source: {errors}",
+            )
+
+    def test_same_name_directory_collision_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "mymod.py").write_text("")
+            (root / "mymod").mkdir()
+            errors = _validate_declared_sources(root, ["mymod"])
+            self.assertTrue(errors)
+            self.assertTrue(
+                any("directory" in e and "mymod" in e for e in errors),
+                f"No error for same-name directory collision: {errors}",
+            )
