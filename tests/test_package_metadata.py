@@ -27,6 +27,18 @@ PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
 
 DECLARED_MODULES = [
     "kismet_eventbus_deployment",
+    "kismet_eventbus_entrypoint",
+    "kismet_eventbus_new_device_adapter",
+    "kismet_eventbus_observation_handler",
+    "kismet_eventbus_runtime",
+    "kismet_eventbus_runtime_config",
+    "kismet_eventbus_transport",
+    "observation_contract",
+    "observation_store",
+]
+
+DEPLOYMENT_ONLY_MODULES = [
+    "kismet_eventbus_deployment",
     "kismet_eventbus_new_device_adapter",
     "kismet_eventbus_observation_handler",
     "kismet_eventbus_runtime",
@@ -48,6 +60,7 @@ HISTORICAL_MODULES = [
 
 HISTORICAL_STEM = set(HISTORICAL_MODULES)
 DECLARED_STEM = set(DECLARED_MODULES)
+DEPLOYMENT_ONLY_STEM = set(DEPLOYMENT_ONLY_MODULES)
 WHEEL_FILENAME = "chasing_your_tail_ng-0.1.0-py3-none-any.whl"
 DIST_INFO_DIR = "chasing_your_tail_ng-0.1.0.dist-info"
 EXPECTED_ROOT_MODULE_FILES = {f"{module}.py" for module in DECLARED_MODULES}
@@ -1045,10 +1058,6 @@ class TestHistoricalModulesAbsent(unittest.TestCase):
 
 
 class TestImportClosure(unittest.TestCase):
-    def test_closure_equals_declared_modules(self) -> None:
-        closure = self._closure("kismet_eventbus_deployment")
-        self.assertEqual(closure, DECLARED_STEM)
-
     def _closure(self, start: str) -> set[str]:
         visited: set[str] = set()
         queue = [start]
@@ -1063,9 +1072,20 @@ class TestImportClosure(unittest.TestCase):
                     queue.append(name)
         return visited
 
-    def test_closure_no_extra_modules(self) -> None:
-        closure = self._closure("kismet_eventbus_deployment")
+    def test_entrypoint_closure_equals_all_nine_modules(self) -> None:
+        closure = self._closure("kismet_eventbus_entrypoint")
         self.assertEqual(closure, DECLARED_STEM)
+
+    def test_deployment_closure_equals_original_eight_modules(self) -> None:
+        closure = self._closure("kismet_eventbus_deployment")
+        self.assertEqual(closure, DEPLOYMENT_ONLY_STEM)
+
+    def test_deployment_does_not_import_entrypoint(self) -> None:
+        imports = _all_import_names(REPO_ROOT / "kismet_eventbus_deployment.py")
+        self.assertNotIn("kismet_eventbus_entrypoint", imports)
+
+    def test_entrypoint_closures_no_extra_modules(self) -> None:
+        closure = self._closure("kismet_eventbus_entrypoint")
         unexpected = closure - DECLARED_STEM
         self.assertFalse(
             unexpected,
