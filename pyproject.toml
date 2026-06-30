@@ -19,6 +19,7 @@ py-modules = [
     "kismet_eventbus_environment_credentials",
     "kismet_eventbus_new_device_adapter",
     "kismet_eventbus_observation_handler",
+    "kismet_eventbus_recovery_policy",
     "kismet_eventbus_runtime",
     "kismet_eventbus_runtime_config",
     "kismet_eventbus_transport",

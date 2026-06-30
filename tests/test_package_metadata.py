@@ -31,9 +31,21 @@ DECLARED_MODULES = [
     "kismet_eventbus_environment_credentials",
     "kismet_eventbus_new_device_adapter",
     "kismet_eventbus_observation_handler",
+    "kismet_eventbus_recovery_policy",
     "kismet_eventbus_runtime",
     "kismet_eventbus_runtime_config",
     "kismet_eventbus_transport",
+    "observation_contract",
+    "observation_store",
+]
+
+RECOVERY_POLICY_CLOSURE = [
+    "kismet_eventbus_recovery_policy",
+    "kismet_eventbus_runtime",
+    "kismet_eventbus_runtime_config",
+    "kismet_eventbus_transport",
+    "kismet_eventbus_observation_handler",
+    "kismet_eventbus_new_device_adapter",
     "observation_contract",
     "observation_store",
 ]
@@ -88,6 +100,7 @@ DECLARED_STEM = set(DECLARED_MODULES)
 DEPLOYMENT_ONLY_STEM = set(DEPLOYMENT_ONLY_MODULES)
 ENTRYPOINT_STEM = set(ENTRYPOINT_CLOSURE)
 ENVIRONMENT_CREDENTIAL_STEM = set(ENVIRONMENT_CREDENTIAL_CLOSURE)
+RECOVERY_POLICY_STEM = set(RECOVERY_POLICY_CLOSURE)
 WHEEL_FILENAME = "chasing_your_tail_ng-0.1.0-py3-none-any.whl"
 DIST_INFO_DIR = "chasing_your_tail_ng-0.1.0.dist-info"
 EXPECTED_ROOT_MODULE_FILES = {f"{module}.py" for module in DECLARED_MODULES}
@@ -1010,7 +1023,7 @@ class TestPyModules(unittest.TestCase):
     def test_exact_ordered_py_modules(self) -> None:
         data = _parse()
         py_modules = data["tool"]["setuptools"]["py-modules"]
-        self.assertEqual(len(py_modules), 10)
+        self.assertEqual(len(py_modules), 11)
         self.assertEqual(py_modules, DECLARED_MODULES)
 
     def test_no_packages_key(self) -> None:
@@ -1135,12 +1148,35 @@ class TestImportClosure(unittest.TestCase):
         )
         self.assertNotIn("kismet_eventbus_entrypoint", imports)
 
-    def test_entrypoint_and_env_creds_union_equals_all_declared(self) -> None:
+    def test_entrypoint_env_creds_recovery_policy_union_equals_all_declared(self) -> None:
         entrypoint_closure = self._closure("kismet_eventbus_entrypoint")
         env_creds_closure = self._closure("kismet_eventbus_environment_credentials")
+        recovery_policy_closure = self._closure("kismet_eventbus_recovery_policy")
         self.assertEqual(
-            entrypoint_closure | env_creds_closure,
+            entrypoint_closure | env_creds_closure | recovery_policy_closure,
             DECLARED_STEM,
+        )
+
+    def test_recovery_policy_closure_equals_exact_eight_modules(self) -> None:
+        closure = self._closure("kismet_eventbus_recovery_policy")
+        self.assertEqual(closure, RECOVERY_POLICY_STEM)
+
+    def test_recovery_policy_does_not_import_entrypoint_or_env_creds(self) -> None:
+        imports = _all_import_names(REPO_ROOT / "kismet_eventbus_recovery_policy.py")
+        self.assertNotIn("kismet_eventbus_entrypoint", imports)
+        self.assertNotIn("kismet_eventbus_environment_credentials", imports)
+
+    def test_recovery_policy_closures_no_extra_modules(self) -> None:
+        closure = self._closure("kismet_eventbus_recovery_policy")
+        unexpected = closure - RECOVERY_POLICY_STEM
+        self.assertFalse(
+            unexpected,
+            f"Closure includes unexpected modules: {unexpected}",
+        )
+        missing = RECOVERY_POLICY_STEM - closure
+        self.assertFalse(
+            missing,
+            f"Declared modules missing from closure: {missing}",
         )
 
     def test_entrypoint_and_env_creds_are_independent_roots(self) -> None:
@@ -1350,14 +1386,14 @@ class TestSourceLayout(unittest.TestCase):
 class TestWheelBuildInstallValidation(unittest.TestCase):
     """Hermetic wheel build, install, and import contract test.
 
-    Builds the ten-module flat package as a wheel from a temporary source
+    Builds the eleven-module flat package as a wheel from a temporary source
     copy, validates wheel contents, installs to a temporary target,
     and verifies that all modules import correctly from the installed
     location without side effects.
     """
 
     def test_wheel_build_install_import_contract(self) -> None:
-        """Build, install, import and verify the ten-module package."""
+        """Build, install, import and verify the eleven-module package."""
         temporary_root = None
         with tempfile.TemporaryDirectory(prefix="cyt-ng-wheel-") as tmp:
             temporary_root = Path(tmp).resolve()
