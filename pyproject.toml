@@ -16,6 +16,7 @@ dependencies = [
 py-modules = [
     "kismet_eventbus_deployment",
     "kismet_eventbus_entrypoint",
+    "kismet_eventbus_environment_credentials",
     "kismet_eventbus_new_device_adapter",
     "kismet_eventbus_observation_handler",
     "kismet_eventbus_runtime",

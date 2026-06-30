@@ -28,6 +28,7 @@ PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
 DECLARED_MODULES = [
     "kismet_eventbus_deployment",
     "kismet_eventbus_entrypoint",
+    "kismet_eventbus_environment_credentials",
     "kismet_eventbus_new_device_adapter",
     "kismet_eventbus_observation_handler",
     "kismet_eventbus_runtime",
@@ -38,6 +39,30 @@ DECLARED_MODULES = [
 ]
 
 DEPLOYMENT_ONLY_MODULES = [
+    "kismet_eventbus_deployment",
+    "kismet_eventbus_new_device_adapter",
+    "kismet_eventbus_observation_handler",
+    "kismet_eventbus_runtime",
+    "kismet_eventbus_runtime_config",
+    "kismet_eventbus_transport",
+    "observation_contract",
+    "observation_store",
+]
+
+ENTRYPOINT_CLOSURE = [
+    "kismet_eventbus_deployment",
+    "kismet_eventbus_entrypoint",
+    "kismet_eventbus_new_device_adapter",
+    "kismet_eventbus_observation_handler",
+    "kismet_eventbus_runtime",
+    "kismet_eventbus_runtime_config",
+    "kismet_eventbus_transport",
+    "observation_contract",
+    "observation_store",
+]
+
+ENVIRONMENT_CREDENTIAL_CLOSURE = [
+    "kismet_eventbus_environment_credentials",
     "kismet_eventbus_deployment",
     "kismet_eventbus_new_device_adapter",
     "kismet_eventbus_observation_handler",
@@ -61,6 +86,8 @@ HISTORICAL_MODULES = [
 HISTORICAL_STEM = set(HISTORICAL_MODULES)
 DECLARED_STEM = set(DECLARED_MODULES)
 DEPLOYMENT_ONLY_STEM = set(DEPLOYMENT_ONLY_MODULES)
+ENTRYPOINT_STEM = set(ENTRYPOINT_CLOSURE)
+ENVIRONMENT_CREDENTIAL_STEM = set(ENVIRONMENT_CREDENTIAL_CLOSURE)
 WHEEL_FILENAME = "chasing_your_tail_ng-0.1.0-py3-none-any.whl"
 DIST_INFO_DIR = "chasing_your_tail_ng-0.1.0.dist-info"
 EXPECTED_ROOT_MODULE_FILES = {f"{module}.py" for module in DECLARED_MODULES}
@@ -983,6 +1010,7 @@ class TestPyModules(unittest.TestCase):
     def test_exact_ordered_py_modules(self) -> None:
         data = _parse()
         py_modules = data["tool"]["setuptools"]["py-modules"]
+        self.assertEqual(len(py_modules), 10)
         self.assertEqual(py_modules, DECLARED_MODULES)
 
     def test_no_packages_key(self) -> None:
@@ -1072,9 +1100,9 @@ class TestImportClosure(unittest.TestCase):
                     queue.append(name)
         return visited
 
-    def test_entrypoint_closure_equals_all_nine_modules(self) -> None:
+    def test_entrypoint_closure_equals_prior_nine_modules(self) -> None:
         closure = self._closure("kismet_eventbus_entrypoint")
-        self.assertEqual(closure, DECLARED_STEM)
+        self.assertEqual(closure, ENTRYPOINT_STEM)
 
     def test_deployment_closure_equals_original_eight_modules(self) -> None:
         closure = self._closure("kismet_eventbus_deployment")
@@ -1086,15 +1114,46 @@ class TestImportClosure(unittest.TestCase):
 
     def test_entrypoint_closures_no_extra_modules(self) -> None:
         closure = self._closure("kismet_eventbus_entrypoint")
-        unexpected = closure - DECLARED_STEM
+        unexpected = closure - ENTRYPOINT_STEM
         self.assertFalse(
             unexpected,
             f"Closure includes unexpected modules: {unexpected}",
         )
-        missing = DECLARED_STEM - closure
+        missing = ENTRYPOINT_STEM - closure
         self.assertFalse(
             missing,
             f"Declared modules missing from closure: {missing}",
+        )
+
+    def test_environment_credential_closure_is_exact(self) -> None:
+        closure = self._closure("kismet_eventbus_environment_credentials")
+        self.assertEqual(closure, ENVIRONMENT_CREDENTIAL_STEM)
+
+    def test_environment_credential_does_not_import_entrypoint(self) -> None:
+        imports = _all_import_names(
+            REPO_ROOT / "kismet_eventbus_environment_credentials.py"
+        )
+        self.assertNotIn("kismet_eventbus_entrypoint", imports)
+
+    def test_entrypoint_and_env_creds_union_equals_all_declared(self) -> None:
+        entrypoint_closure = self._closure("kismet_eventbus_entrypoint")
+        env_creds_closure = self._closure("kismet_eventbus_environment_credentials")
+        self.assertEqual(
+            entrypoint_closure | env_creds_closure,
+            DECLARED_STEM,
+        )
+
+    def test_entrypoint_and_env_creds_are_independent_roots(self) -> None:
+        entrypoint_closure = self._closure("kismet_eventbus_entrypoint")
+        env_creds_closure = self._closure("kismet_eventbus_environment_credentials")
+        # Neither root imports the other
+        self.assertNotIn(
+            "kismet_eventbus_environment_credentials",
+            entrypoint_closure,
+        )
+        self.assertNotIn(
+            "kismet_eventbus_entrypoint",
+            env_creds_closure,
         )
 
 
@@ -1291,14 +1350,14 @@ class TestSourceLayout(unittest.TestCase):
 class TestWheelBuildInstallValidation(unittest.TestCase):
     """Hermetic wheel build, install, and import contract test.
 
-    Builds the eight-module flat package as a wheel from a temporary source
+    Builds the ten-module flat package as a wheel from a temporary source
     copy, validates wheel contents, installs to a temporary target,
     and verifies that all modules import correctly from the installed
     location without side effects.
     """
 
     def test_wheel_build_install_import_contract(self) -> None:
-        """Build, install, import and verify the eight-module package."""
+        """Build, install, import and verify the ten-module package."""
         temporary_root = None
         with tempfile.TemporaryDirectory(prefix="cyt-ng-wheel-") as tmp:
             temporary_root = Path(tmp).resolve()
